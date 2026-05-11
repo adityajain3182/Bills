@@ -23,6 +23,29 @@ export class BillsDB extends Dexie {
       settlements: 'id, groupId, fromPersonId, toPersonId, date, [groupId+date]',
       preferences: 'id',
     });
+    // v2: add sync fields. The schema migration adds the index, and we
+    // initialize updatedAt = createdAt for existing rows.
+    this.version(2)
+      .stores({
+        people: 'id, name, groupId, createdAt, updatedAt, dirty',
+        groups: 'id, name, archived, createdAt, updatedAt, dirty',
+        expenses: 'id, groupId, date, createdAt, updatedAt, dirty, [groupId+date]',
+        settlements:
+          'id, groupId, fromPersonId, toPersonId, date, createdAt, updatedAt, dirty, [groupId+date]',
+        preferences: 'id',
+      })
+      .upgrade(async (tx) => {
+        for (const table of ['people', 'groups', 'expenses', 'settlements'] as const) {
+          await tx
+            .table(table)
+            .toCollection()
+            .modify((row: Record<string, unknown>) => {
+              if (typeof row.updatedAt !== 'number') {
+                row.updatedAt = typeof row.createdAt === 'number' ? row.createdAt : Date.now();
+              }
+            });
+        }
+      });
   }
 }
 

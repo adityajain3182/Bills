@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Header } from '../components/Header';
 import { usePeople, usePrefs } from '../db/hooks';
 import { Button } from '../components/Button';
@@ -14,6 +14,11 @@ import { CURRENCIES } from '../lib/money';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { Sheet } from '../components/Sheet';
 import { Avatar } from '../components/Avatar';
+import { AuthSheet } from '../components/AuthSheet';
+import { useAuth, signOut } from '../sync/auth';
+import { cloudEnabled } from '../sync/supabase';
+import { subscribeSync, syncNow, type SyncStatus } from '../sync/sync';
+import { formatDistanceToNow } from 'date-fns';
 
 export function SettingsScreen() {
   const prefs = usePrefs();
@@ -22,8 +27,13 @@ export function SettingsScreen() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [signOutOpen, setSignOutOpen] = useState(false);
   const me = people.find((p) => p.id === prefs?.mePersonId);
   const [meName, setMeName] = useState('');
+  const { user } = useAuth();
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({ kind: 'idle' });
+  useEffect(() => subscribeSync(setSyncStatus), []);
 
   const handleExport = async () => {
     try {
@@ -78,6 +88,57 @@ export function SettingsScreen() {
             </div>
           </button>
         </SectionCard>
+
+        {cloudEnabled && (
+          <SectionCard label="Cloud sync">
+            {user ? (
+              <div className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className="h-9 w-9 rounded-full bg-forest text-cream flex items-center justify-center">
+                    ☁
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm truncate">{user.email}</div>
+                    <div className="text-xs text-ink-muted">
+                      {syncStatus.kind === 'running'
+                        ? 'Syncing now…'
+                        : syncStatus.kind === 'error'
+                          ? `Sync error: ${syncStatus.message}`
+                          : syncStatus.kind === 'ok'
+                            ? `Synced ${formatDistanceToNow(syncStatus.at, { addSuffix: true })}`
+                            : 'Ready to sync'}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="secondary"
+                    full
+                    onClick={() => {
+                      void syncNow();
+                      push('Syncing…', 'info');
+                    }}
+                  >
+                    Sync now
+                  </Button>
+                  <Button variant="danger" onClick={() => setSignOutOpen(true)}>
+                    Sign out
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm text-ink-muted">
+                  Sign in with your email to sync groups, expenses and settlements across your
+                  devices and share groups with friends.
+                </p>
+                <Button full onClick={() => setAuthOpen(true)}>
+                  Sign in
+                </Button>
+              </div>
+            )}
+          </SectionCard>
+        )}
 
         <SectionCard label="Preferences">
           <div>
@@ -140,6 +201,21 @@ export function SettingsScreen() {
           await clearAll();
           push('All data cleared', 'success');
           setTimeout(() => location.reload(), 400);
+        }}
+      />
+
+      <AuthSheet open={authOpen} onClose={() => setAuthOpen(false)} />
+
+      <ConfirmSheet
+        open={signOutOpen}
+        onClose={() => setSignOutOpen(false)}
+        title="Sign out?"
+        description="Your data stays on this device. You can sign back in any time to resume syncing."
+        confirmLabel="Sign out"
+        destructive
+        onConfirm={async () => {
+          await signOut();
+          push('Signed out', 'success');
         }}
       />
 

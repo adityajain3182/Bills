@@ -15,6 +15,7 @@ A mobile-first Progressive Web App for splitting expenses with friends and roomm
 - **Friends** — track everyone you split with across groups.
 - **Export / Import** — back up your data as JSON; portable between devices.
 - **Offline-first PWA** — installable to your home screen on iOS and Android, works with no network.
+- **Optional cloud sync** — sign in with a magic link to sync across your devices and share groups with friends by email.
 
 ## Quick start
 
@@ -75,6 +76,32 @@ iOS does not show automatic install prompts. To install:
 4. Tap **Add** in the top right.
 
 The app icon appears on your home screen; opening it launches Tally in standalone mode without browser chrome.
+
+## Cloud sync (optional)
+
+By default the app is fully local — your data only lives on this device. Enable optional cloud sync to share groups with friends and use the app on multiple devices.
+
+### One-time Supabase setup
+
+1. **Create a Supabase project** at [supabase.com](https://supabase.com). Note the project URL and the **anon/public** key from **Project Settings → API**.
+2. **Enable email auth**: **Authentication → Providers → Email** is enabled by default. Under **Authentication → URL Configuration**, set **Site URL** to your deployed app URL (e.g. `https://<user>.github.io/Bills/`) and add the same URL plus `http://localhost:5173/Bills/` to **Redirect URLs**.
+3. **Run the schema**: open **SQL Editor**, paste `supabase/schema.sql` from this repo, run it. This creates the tables (`groups`, `people`, `expenses`, `settlements`, `group_members`, `invites`, `profiles`), the row-level security policies, an `auth.users` trigger that auto-creates a profile + accepts pending invites on signup, and an `updated_at` trigger.
+4. **Local dev**: copy `.env.example` to `.env.local` and fill in `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY`. Restart `npm run dev`.
+5. **Production**: add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as **GitHub Actions repo secrets** (Repo → Settings → Secrets and variables → Actions). The deploy workflow passes them at build time. If you don't set them, the deployed app silently falls back to local-only mode.
+
+### How sync works
+
+- Each row in IndexedDB carries `updatedAt` and `deletedAt`. Mutations bump `updatedAt` and mark the row dirty.
+- On mutation (debounced) and on focus, the client pushes dirty rows via `upsert` and pulls everything newer than `lastPulledAt`. Conflict resolution is last-write-wins per row.
+- Deletes are soft (`deletedAt`) so they propagate to other devices.
+- **Sharing**: a group owner enters a friend's email under **Group → Share with friends**. A row is added to the `invites` table. When the friend signs in with that email, a trigger adds them to `group_members`; their next sync pulls the group, its people, expenses and settlements.
+- Offline edits are buffered locally and pushed the next time you regain network and focus the app.
+
+### Privacy
+
+- Emails and display names are only visible to users who share a group with you (enforced by RLS).
+- Magic-link auth means no passwords stored, ever. Sessions live in `localStorage` and refresh automatically.
+- You can sign out from **Settings → Cloud sync → Sign out**; your local data stays.
 
 ## Deploy to GitHub Pages
 

@@ -2,14 +2,29 @@ export type ID = string;
 
 export type SplitMethod = 'equal' | 'exact' | 'percent' | 'shares';
 
-export interface Person {
+// Common sync fields stamped on every synced row.
+export interface SyncFields {
+  updatedAt: number;
+  deletedAt?: number;
+  /** Local-only flag — true if row has unpushed changes. Not synced. */
+  dirty?: 0 | 1;
+  /** Group this row belongs to (so we know which group's sync to use). */
+  groupId?: ID;
+  /** Auth user who created the row, when known. */
+  ownerId?: string;
+  /** If this person row represents a real auth user. */
+  linkedUserId?: string;
+}
+
+export interface Person extends SyncFields {
   id: ID;
   name: string;
   avatarColor: string;
   createdAt: number;
+  groupId?: ID; // people are scoped to a group when synced
 }
 
-export interface Group {
+export interface Group extends SyncFields {
   id: ID;
   name: string;
   emoji: string;
@@ -44,7 +59,7 @@ export interface SharesConfig {
 
 export type SplitConfig = EqualConfig | ExactConfig | PercentConfig | SharesConfig;
 
-export interface Expense {
+export interface Expense extends SyncFields {
   id: ID;
   groupId: ID;
   description: string;
@@ -58,10 +73,9 @@ export interface Expense {
   category: string;
   notes?: string;
   createdAt: number;
-  updatedAt: number;
 }
 
-export interface Settlement {
+export interface Settlement extends SyncFields {
   id: ID;
   groupId: ID;
   fromPersonId: ID;
@@ -80,6 +94,10 @@ export interface Preferences {
   onboarded: 0 | 1;
   installPromptDismissed: 0 | 1;
   visitCount: number;
+  /** Last successful pull timestamp (ms). Used as the high-watermark. */
+  lastPulledAt?: number;
+  /** Auth user id, when signed in. */
+  authUserId?: string | null;
 }
 
 export const CATEGORIES = [

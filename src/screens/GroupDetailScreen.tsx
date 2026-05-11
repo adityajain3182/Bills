@@ -23,6 +23,9 @@ import { CATEGORIES } from '../types';
 import { format } from 'date-fns';
 import { groupByDay } from '../lib/format';
 import { SwipeRow } from '../components/SwipeRow';
+import { ShareGroupSheet } from '../components/ShareGroupSheet';
+import { cloudEnabled } from '../sync/supabase';
+import { useAuth } from '../sync/auth';
 
 type Tab = 'expenses' | 'balances' | 'activity';
 
@@ -39,7 +42,9 @@ export function GroupDetailScreen() {
   const [tab, setTab] = useState<Tab>('expenses');
   const [simplified, setSimplified] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const { user: authUser } = useAuth();
   const [pendingDeleteExpense, setPendingDeleteExpense] = useState<string | null>(null);
   const [pendingDeleteSettlement, setPendingDeleteSettlement] = useState<string | null>(null);
 
@@ -161,6 +166,19 @@ export function GroupDetailScreen() {
 
       <Sheet open={menuOpen} onClose={() => setMenuOpen(false)} title="Group options">
         <div className="space-y-2 pb-4">
+          {cloudEnabled && (
+            <Button
+              full
+              variant="secondary"
+              onClick={() => {
+                setMenuOpen(false);
+                setShareOpen(true);
+              }}
+              disabled={!authUser}
+            >
+              {authUser ? 'Share with friends' : 'Sign in to share'}
+            </Button>
+          )}
           <Button
             full
             variant="secondary"
@@ -184,6 +202,13 @@ export function GroupDetailScreen() {
           </Button>
         </div>
       </Sheet>
+
+      <ShareGroupSheet
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        groupId={group.id}
+        groupName={group.name}
+      />
 
       <ConfirmSheet
         open={confirmDelete}
