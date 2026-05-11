@@ -12,7 +12,9 @@ export function SyncBadge() {
 
   const label =
     status.kind === 'running'
-      ? 'Syncing…'
+      ? status.phase
+        ? `${status.phase}…`
+        : 'Syncing…'
       : status.kind === 'error'
         ? 'Sync error'
         : 'Synced';
