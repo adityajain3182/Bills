@@ -85,7 +85,7 @@ By default the app is fully local — your data only lives on this device. Enabl
 
 1. **Create a Supabase project** at [supabase.com](https://supabase.com). Note the project URL and the **anon/public** key from **Project Settings → API**.
 2. **Enable email auth**: **Authentication → Providers → Email** is enabled by default. Under **Authentication → URL Configuration**, set **Site URL** to your deployed app URL (e.g. `https://<user>.github.io/Bills/`) and add the same URL plus `http://localhost:5173/Bills/` to **Redirect URLs**.
-3. **Run the schema**: open **SQL Editor**, paste `supabase/schema.sql` from this repo, run it. This creates the tables (`groups`, `people`, `expenses`, `settlements`, `group_members`, `invites`, `profiles`), the row-level security policies, an `auth.users` trigger that auto-creates a profile + accepts pending invites on signup, and an `updated_at` trigger. Re-runnable — safe to re-run after pulling a new schema version.
+3. **Run the schema**: open **SQL Editor**, paste `supabase/schema.sql` from this repo, run it. This creates the tables (`profiles`, `groups`, `group_members`, `expenses`, `settlements`), the row-level security policies, an `auth.users` trigger that auto-creates a profile on signup, and `updated_at` triggers. The script is destructive — it `DROP`s any old tables from previous schema versions before recreating. Safe to re-run.
 4. **(Recommended) Add Google sign-in** so you aren't dependent on Supabase's email rate limit:
    - In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create an **OAuth 2.0 Client ID** (Web application). Add `https://<your-supabase-ref>.supabase.co/auth/v1/callback` as an authorized redirect URI.
    - In Supabase → **Authentication → Providers → Google**, paste the Client ID + Secret and enable it.
@@ -94,23 +94,23 @@ By default the app is fully local — your data only lives on this device. Enabl
 6. **Local dev**: copy `.env.example` to `.env.local` and fill in `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY`. Restart `npm run dev`.
 7. **Production**: add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as **GitHub Actions repo secrets** (Repo → Settings → Secrets and variables → Actions). The deploy workflow passes them at build time. If you don't set them, the deployed app silently falls back to local-only mode.
 
-### Migrations
+### How sync works (v2 — email-based)
 
-If you ran an earlier version of `supabase/schema.sql` and want to apply only the incremental changes, the SQL files in `supabase/migrations/` are idempotent and small enough to paste straight into the SQL editor. Re-running the full schema is also fine — it's written to be re-runnable.
-
-### How sync works
-
-- Each row in IndexedDB carries `updatedAt` and `deletedAt`. Mutations bump `updatedAt` and mark the row dirty.
-- On mutation (debounced) and on focus, the client pushes dirty rows via `upsert` and pulls everything newer than `lastPulledAt`. Conflict resolution is last-write-wins per row.
-- Deletes are soft (`deletedAt`) so they propagate to other devices.
-- **Sharing**: a group owner enters a friend's email under **Group → Share with friends**. A row is added to the `invites` table. When the friend signs in with that email, a trigger adds them to `group_members`; their next sync pulls the group, its people, expenses and settlements.
-- Offline edits are buffered locally and pushed the next time you regain network and focus the app.
+- **Members are emails.** When you create a group or add someone to it, you enter their email. That email is the identifier used end-to-end — no separate "person" entity, no claim flow, no drift between devices.
+- Each cloud row has `updated_at` and `deleted_at`. Local mutations bump `updatedAt` and mark the row dirty. On mutation (debounced) and on tab focus, the client pushes dirty rows then pulls anything newer. Conflict resolution is last-write-wins per row.
+- Deletes are soft so they propagate.
+- **Inviting a friend**: as the group owner, tap **Group → Add member** and enter their email. The app pushes the membership immediately and sends them a sign-in link. The moment they sign in with that email (on any device), they see the group with all its expenses and settlements.
+- Offline edits buffer locally and push the next time you have network + focus the app.
 
 ### Privacy
 
-- Emails and display names are only visible to users who share a group with you (enforced by RLS).
-- Magic-link auth means no passwords stored, ever. Sessions live in `localStorage` and refresh automatically.
-- You can sign out from **Settings → Cloud sync → Sign out**; your local data stays.
+- Emails and display names are only visible to users who share a group with you (enforced by Row Level Security).
+- Magic-link or Google auth — no passwords stored. Sessions live in `localStorage` and refresh automatically.
+- Sign out from **Settings → Cloud sync → Sign out**; your local data stays.
+
+### Upgrading from v1
+
+The v2 schema is a clean rewrite. To upgrade an existing Supabase project, just re-run `supabase/schema.sql` — it drops the old `people` / `invites` / etc. tables and recreates the new ones. **Your existing cloud data will be erased**; export from one of your devices first via **Settings → Export to JSON** if you want a backup. Local IndexedDB on each device is also wiped on first launch of the new build (Dexie v3 migration); sign in afterwards to repopulate from cloud.
 
 ## Deploy to GitHub Pages
 

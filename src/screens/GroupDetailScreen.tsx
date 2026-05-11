@@ -4,8 +4,8 @@ import {
   useGroup,
   useGroupExpenses,
   useGroupSettlements,
-  usePeople,
   usePrefs,
+  useProfiles,
 } from '../db/hooks';
 import { Header } from '../components/Header';
 import { Fab } from '../components/Fab';
@@ -16,25 +16,35 @@ import { formatMoney, formatMoneyAbs } from '../lib/money';
 import { Avatar } from '../components/Avatar';
 import { Button } from '../components/Button';
 import { ConfirmSheet } from '../components/ConfirmSheet';
-import { archiveGroup, deleteExpense, deleteGroup, deleteSettlement } from '../db/queries';
-import { useUI } from '../store/ui';
 import { Sheet } from '../components/Sheet';
-import { CATEGORIES } from '../types';
+import { AddMemberSheet } from '../components/AddMemberSheet';
+import {
+  archiveGroup,
+  deleteExpense,
+  deleteGroup,
+  deleteSettlement,
+} from '../db/queries';
+import { useUI } from '../store/ui';
+import { CATEGORIES, colorForEmail, displayNameForEmail } from '../types';
+import type { Email } from '../types';
 import { format } from 'date-fns';
 import { groupByDay } from '../lib/format';
 import { SwipeRow } from '../components/SwipeRow';
-import { ShareGroupSheet } from '../components/ShareGroupSheet';
-import { cloudEnabled } from '../sync/supabase';
-import { useAuth } from '../sync/auth';
 
 type Tab = 'expenses' | 'balances' | 'activity';
+
+interface DisplayPerson {
+  email: Email;
+  name: string;
+  avatarColor: string;
+}
 
 export function GroupDetailScreen() {
   const { id } = useParams<{ id: string }>();
   const group = useGroup(id);
   const expenses = useGroupExpenses(id) ?? [];
   const settlements = useGroupSettlements(id) ?? [];
-  const people = usePeople() ?? [];
+  const profiles = useProfiles() ?? [];
   const prefs = usePrefs();
   const navigate = useNavigate();
   const push = useUI((s) => s.pushToast);
@@ -42,28 +52,40 @@ export function GroupDetailScreen() {
   const [tab, setTab] = useState<Tab>('expenses');
   const [simplified, setSimplified] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [shareOpen, setShareOpen] = useState(false);
+  const [addMemberOpen, setAddMemberOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const { user: authUser } = useAuth();
   const [pendingDeleteExpense, setPendingDeleteExpense] = useState<string | null>(null);
   const [pendingDeleteSettlement, setPendingDeleteSettlement] = useState<string | null>(null);
 
-  const peopleById = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
-  const meId = prefs?.mePersonId ?? null;
+  const profileByEmail = useMemo(() => new Map(profiles.map((p) => [p.email, p])), [profiles]);
 
-  if (group === undefined) {
-    return (
-      <>
-        <Header title="Loading…" back />
-      </>
-    );
-  }
+  const peopleMap: Map<Email, DisplayPerson> = useMemo(() => {
+    if (!group) return new Map();
+    const m = new Map<Email, DisplayPerson>();
+    for (const member of group.members) {
+      const p = profileByEmail.get(member.email);
+      m.set(member.email, {
+        email: member.email,
+        name:
+          p?.displayName ||
+          member.displayName ||
+          displayNameForEmail(member.email),
+        avatarColor: p?.avatarColor || colorForEmail(member.email),
+      });
+    }
+    return m;
+  }, [group, profileByEmail]);
+
+  const meEmail = prefs?.myEmail;
+
+  if (group === undefined) return <Header title="Loading…" back />;
   if (!group) return <Navigate to="/groups" replace />;
 
   const currency = group.currency;
-  const balances = computeNetBalances(expenses, settlements, group.memberIds);
+  const memberEmails = group.members.map((m) => m.email);
+  const balances = computeNetBalances(expenses, settlements, memberEmails);
   const totalSpent = expenses.reduce((a, b) => a + b.amount, 0);
-  const meBalance = meId ? balances.get(meId) ?? 0 : 0;
+  const meBalance = meEmail ? balances.get(meEmail) ?? 0 : 0;
 
   return (
     <>
@@ -127,8 +149,8 @@ export function GroupDetailScreen() {
           <ExpensesTab
             expenses={expenses}
             currency={currency}
-            peopleById={peopleById}
-            meId={meId}
+            peopleMap={peopleMap}
+            meEmail={meEmail}
             onEdit={(eid) => navigate(`/groups/${group.id}/edit/${eid}`)}
             onDelete={setPendingDeleteExpense}
           />
@@ -140,11 +162,13 @@ export function GroupDetailScreen() {
             balances={balances}
             expenses={expenses}
             settlements={settlements}
-            peopleById={peopleById}
+            peopleMap={peopleMap}
             currency={currency}
-            meId={meId}
-            onSettle={(fromId, toId, amount) =>
-              navigate(`/groups/${group.id}/settle?from=${fromId}&to=${toId}&amount=${amount}`)
+            meEmail={meEmail}
+            onSettle={(fromE, toE, amount) =>
+              navigate(
+                `/groups/${group.id}/settle?from=${encodeURIComponent(fromE)}&to=${encodeURIComponent(toE)}&amount=${amount}`,
+              )
             }
           />
         )}
@@ -152,9 +176,9 @@ export function GroupDetailScreen() {
           <ActivityTab
             expenses={expenses}
             settlements={settlements}
-            peopleById={peopleById}
+            peopleMap={peopleMap}
             currency={currency}
-            meId={meId}
+            meEmail={meEmail}
             onDeleteExpense={setPendingDeleteExpense}
             onDeleteSettlement={setPendingDeleteSettlement}
             onEditExpense={(eid) => navigate(`/groups/${group.id}/edit/${eid}`)}
@@ -166,17 +190,16 @@ export function GroupDetailScreen() {
 
       <Sheet open={menuOpen} onClose={() => setMenuOpen(false)} title="Group options">
         <div className="space-y-2 pb-4">
-          {cloudEnabled && (
+          {meEmail === group.ownerEmail && (
             <Button
               full
               variant="secondary"
               onClick={() => {
                 setMenuOpen(false);
-                setShareOpen(true);
+                setAddMemberOpen(true);
               }}
-              disabled={!authUser}
             >
-              {authUser ? 'Share with friends' : 'Sign in to share'}
+              Add member
             </Button>
           )}
           <Button
@@ -190,31 +213,34 @@ export function GroupDetailScreen() {
           >
             {group.archived ? 'Unarchive group' : 'Archive group'}
           </Button>
-          <Button
-            full
-            variant="danger"
-            onClick={() => {
-              setMenuOpen(false);
-              setConfirmDelete(true);
-            }}
-          >
-            Delete group
-          </Button>
+          {meEmail === group.ownerEmail && (
+            <Button
+              full
+              variant="danger"
+              onClick={() => {
+                setMenuOpen(false);
+                setConfirmDelete(true);
+              }}
+            >
+              Delete group
+            </Button>
+          )}
         </div>
       </Sheet>
 
-      <ShareGroupSheet
-        open={shareOpen}
-        onClose={() => setShareOpen(false)}
+      <AddMemberSheet
+        open={addMemberOpen}
+        onClose={() => setAddMemberOpen(false)}
         groupId={group.id}
         groupName={group.name}
+        existingEmails={memberEmails}
       />
 
       <ConfirmSheet
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
         title="Delete this group?"
-        description="Expenses and settlements will be permanently removed. This can't be undone."
+        description="Expenses and settlements will be permanently removed."
         confirmLabel="Delete"
         destructive
         onConfirm={async () => {
@@ -228,7 +254,6 @@ export function GroupDetailScreen() {
         open={!!pendingDeleteExpense}
         onClose={() => setPendingDeleteExpense(null)}
         title="Delete this expense?"
-        description="This can't be undone."
         confirmLabel="Delete"
         destructive
         onConfirm={async () => {
@@ -241,7 +266,6 @@ export function GroupDetailScreen() {
         open={!!pendingDeleteSettlement}
         onClose={() => setPendingDeleteSettlement(null)}
         title="Delete this settlement?"
-        description="This can't be undone."
         confirmLabel="Delete"
         destructive
         onConfirm={async () => {
@@ -256,15 +280,15 @@ export function GroupDetailScreen() {
 function ExpensesTab({
   expenses,
   currency,
-  peopleById,
-  meId,
+  peopleMap,
+  meEmail,
   onEdit,
   onDelete,
 }: {
   expenses: ReturnType<typeof useGroupExpenses> extends infer T ? Exclude<T, undefined> : never;
   currency: string;
-  peopleById: Map<string, { id: string; name: string; avatarColor: string }>;
-  meId: string | null;
+  peopleMap: Map<Email, DisplayPerson>;
+  meEmail: Email | undefined;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
@@ -288,15 +312,11 @@ function ExpensesTab({
           <ul className="space-y-2">
             {section.items.map((e) => {
               const cat = CATEGORIES.find((c) => c.id === e.category) ?? CATEGORIES[0];
-              const payers = e.paidBy
-                .map((p) => peopleById.get(p.personId)?.name ?? '?')
+              const payerNames = e.paidBy
+                .map((p) => peopleMap.get(p.email)?.name ?? displayNameForEmail(p.email))
                 .join(', ');
-              const myShare = meId
-                ? e.splits.find((s) => s.personId === meId)?.amount ?? 0
-                : 0;
-              const myPaid = meId
-                ? e.paidBy.find((p) => p.personId === meId)?.amount ?? 0
-                : 0;
+              const myShare = meEmail ? e.splits.find((s) => s.email === meEmail)?.amount ?? 0 : 0;
+              const myPaid = meEmail ? e.paidBy.find((p) => p.email === meEmail)?.amount ?? 0 : 0;
               const myNet = myPaid - myShare;
               return (
                 <li key={e.id}>
@@ -311,27 +331,23 @@ function ExpensesTab({
                       <div className="flex-1 min-w-0">
                         <div className="font-medium truncate">{e.description}</div>
                         <div className="text-xs text-ink-muted truncate">
-                          {payers} paid {formatMoney(e.amount, currency)}
+                          {payerNames} paid {formatMoney(e.amount, currency)}
                         </div>
                       </div>
                       <div className="text-right">
-                        {meId ? (
+                        {meEmail ? (
                           myNet === 0 ? (
                             <div className="text-xs text-ink-muted">not involved</div>
                           ) : myNet > 0 ? (
                             <>
-                              <div className="text-[10px] uppercase tracking-wider text-forest">
-                                lent
-                              </div>
+                              <div className="text-[10px] uppercase tracking-wider text-forest">lent</div>
                               <div className="font-display text-forest font-semibold tabular-nums">
                                 {formatMoneyAbs(myNet, currency)}
                               </div>
                             </>
                           ) : (
                             <>
-                              <div className="text-[10px] uppercase tracking-wider text-warmred">
-                                owe
-                              </div>
+                              <div className="text-[10px] uppercase tracking-wider text-warmred">owe</div>
                               <div className="font-display text-warmred font-semibold tabular-nums">
                                 {formatMoneyAbs(myNet, currency)}
                               </div>
@@ -357,23 +373,22 @@ function BalancesTab({
   balances,
   expenses,
   settlements,
-  peopleById,
+  peopleMap,
   currency,
-  meId,
+  meEmail,
   onSettle,
 }: {
   simplified: boolean;
   setSimplified: (v: boolean) => void;
-  balances: Map<string, number>;
+  balances: Map<Email, number>;
   expenses: ReturnType<typeof useGroupExpenses> extends infer T ? Exclude<T, undefined> : never;
   settlements: ReturnType<typeof useGroupSettlements> extends infer T ? Exclude<T, undefined> : never;
-  peopleById: Map<string, { id: string; name: string; avatarColor: string }>;
+  peopleMap: Map<Email, DisplayPerson>;
   currency: string;
-  meId: string | null;
-  onSettle: (fromId: string, toId: string, amountCents: number) => void;
+  meEmail: Email | undefined;
+  onSettle: (fromEmail: Email, toEmail: Email, amount: number) => void;
 }) {
   const debts = simplified ? simplifyDebts(balances) : computePairwiseDebts(expenses, settlements);
-
   return (
     <div className="pb-2">
       <div className="card p-4 mb-4">
@@ -383,28 +398,22 @@ function BalancesTab({
         <ul className="space-y-2">
           {[...balances.entries()]
             .sort((a, b) => b[1] - a[1])
-            .map(([id, bal]) => {
-              const p = peopleById.get(id);
+            .map(([email, bal]) => {
+              const p = peopleMap.get(email);
               if (!p) return null;
               return (
-                <li key={id} className="flex items-center gap-3">
+                <li key={email} className="flex items-center gap-3">
                   <Avatar name={p.name} color={p.avatarColor} size={32} />
                   <div className="flex-1 truncate">
                     {p.name}
-                    {id === meId && (
-                      <span className="text-ink-muted text-xs"> (you)</span>
-                    )}
+                    {email === meEmail && <span className="text-ink-muted text-xs"> (you)</span>}
                   </div>
                   <div
                     className={`font-display tabular-nums ${
                       bal > 0 ? 'text-forest' : bal < 0 ? 'text-warmred' : 'text-ink-muted'
                     }`}
                   >
-                    {bal === 0
-                      ? '—'
-                      : bal > 0
-                        ? `+${formatMoneyAbs(bal, currency)}`
-                        : `−${formatMoneyAbs(bal, currency)}`}
+                    {bal === 0 ? '—' : bal > 0 ? `+${formatMoneyAbs(bal, currency)}` : `−${formatMoneyAbs(bal, currency)}`}
                   </div>
                 </li>
               );
@@ -432,10 +441,10 @@ function BalancesTab({
       ) : (
         <ul className="space-y-2">
           {debts.map((d, i) => {
-            const from = peopleById.get(d.from);
-            const to = peopleById.get(d.to);
+            const from = peopleMap.get(d.from);
+            const to = peopleMap.get(d.to);
             if (!from || !to) return null;
-            const involvesMe = meId && (d.from === meId || d.to === meId);
+            const involvesMe = meEmail && (d.from === meEmail || d.to === meEmail);
             return (
               <li key={i} className="card p-3 flex items-center gap-3">
                 <div className="flex items-center -space-x-2">
@@ -443,9 +452,9 @@ function BalancesTab({
                   <Avatar name={to.name} color={to.avatarColor} size={32} ring />
                 </div>
                 <div className="flex-1 text-sm">
-                  <span className="font-medium">{d.from === meId ? 'You' : from.name}</span>{' '}
-                  <span className="text-ink-muted">owe{d.from === meId ? '' : 's'}</span>{' '}
-                  <span className="font-medium">{d.to === meId ? 'you' : to.name}</span>
+                  <span className="font-medium">{d.from === meEmail ? 'You' : from.name}</span>{' '}
+                  <span className="text-ink-muted">owe{d.from === meEmail ? '' : 's'}</span>{' '}
+                  <span className="font-medium">{d.to === meEmail ? 'you' : to.name}</span>
                   <div className="font-display text-lg tabular-nums">
                     {formatMoney(d.amount, currency)}
                   </div>
@@ -453,7 +462,7 @@ function BalancesTab({
                 {involvesMe && (
                   <Button
                     size="sm"
-                    variant={d.from === meId ? 'primary' : 'secondary'}
+                    variant={d.from === meEmail ? 'primary' : 'secondary'}
                     onClick={() => onSettle(d.from, d.to, d.amount)}
                   >
                     Settle
@@ -471,18 +480,18 @@ function BalancesTab({
 function ActivityTab({
   expenses,
   settlements,
-  peopleById,
+  peopleMap,
   currency,
-  meId,
+  meEmail,
   onDeleteExpense,
   onDeleteSettlement,
   onEditExpense,
 }: {
   expenses: ReturnType<typeof useGroupExpenses> extends infer T ? Exclude<T, undefined> : never;
   settlements: ReturnType<typeof useGroupSettlements> extends infer T ? Exclude<T, undefined> : never;
-  peopleById: Map<string, { id: string; name: string; avatarColor: string }>;
+  peopleMap: Map<Email, DisplayPerson>;
   currency: string;
-  meId: string | null;
+  meEmail: Email | undefined;
   onDeleteExpense: (id: string) => void;
   onDeleteSettlement: (id: string) => void;
   onEditExpense: (id: string) => void;
@@ -498,7 +507,6 @@ function ActivityTab({
   if (items.length === 0) {
     return <EmptyState emoji="📜" title="No activity yet" description="Expenses and settlements will appear here." />;
   }
-
   const grouped = groupByDay(items, (i) => i.date);
 
   return (
@@ -514,7 +522,11 @@ function ActivityTab({
                 const e = item.expense;
                 const cat = CATEGORIES.find((c) => c.id === e.category) ?? CATEGORIES[0];
                 const payerNames = e.paidBy
-                  .map((p) => (p.personId === meId ? 'You' : peopleById.get(p.personId)?.name ?? '?'))
+                  .map((p) =>
+                    p.email === meEmail
+                      ? 'You'
+                      : peopleMap.get(p.email)?.name ?? displayNameForEmail(p.email),
+                  )
                   .join(' & ');
                 return (
                   <li key={e.id}>
@@ -538,8 +550,8 @@ function ActivityTab({
                 );
               }
               const s = item.settlement;
-              const from = peopleById.get(s.fromPersonId);
-              const to = peopleById.get(s.toPersonId);
+              const from = peopleMap.get(s.fromEmail);
+              const to = peopleMap.get(s.toEmail);
               return (
                 <li key={`s-${i}-${s.id}`}>
                   <SwipeRow onDelete={() => onDeleteSettlement(s.id)}>
@@ -549,8 +561,8 @@ function ActivityTab({
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="font-medium text-sm truncate">
-                          {(s.fromPersonId === meId ? 'You' : from?.name) ?? '?'} paid{' '}
-                          {(s.toPersonId === meId ? 'you' : to?.name) ?? '?'}
+                          {(s.fromEmail === meEmail ? 'You' : from?.name) ?? '?'} paid{' '}
+                          {(s.toEmail === meEmail ? 'you' : to?.name) ?? '?'}
                         </div>
                         <div className="text-xs text-ink-muted">
                           {formatMoney(s.amount, currency)} · {format(s.date, 'h:mm a')}

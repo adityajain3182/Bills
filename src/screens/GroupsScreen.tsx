@@ -1,6 +1,12 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useAllExpenses, useAllSettlements, useGroups, usePeople, usePrefs } from '../db/hooks';
+import {
+  useAllExpenses,
+  useAllSettlements,
+  useGroups,
+  usePrefs,
+  useProfiles,
+} from '../db/hooks';
 import { Header } from '../components/Header';
 import { EmptyState } from '../components/EmptyState';
 import { Fab } from '../components/Fab';
@@ -10,38 +16,35 @@ import { CreateGroupSheet } from './CreateGroupSheet';
 import { computeNetBalances } from '../lib/balances';
 import { formatMoney, formatMoneyAbs } from '../lib/money';
 import { AvatarStack } from '../components/Avatar';
+import { colorForEmail, displayNameForEmail } from '../types';
 
 export function GroupsScreen() {
   const groups = useGroups();
-  const people = usePeople();
   const expenses = useAllExpenses();
   const settlements = useAllSettlements();
   const prefs = usePrefs();
+  const profiles = useProfiles();
   const [creating, setCreating] = useState(false);
 
-  const peopleById = useMemo(() => {
-    const map = new Map(people?.map((p) => [p.id, p]) ?? []);
-    return map;
-  }, [people]);
+  const profileByEmail = useMemo(() => new Map(profiles?.map((p) => [p.email, p]) ?? []), [profiles]);
+  const meEmail = prefs?.myEmail;
 
-  const meId = prefs?.mePersonId ?? null;
-
-  // Aggregate net across all groups for "Me"
   const totals = useMemo(() => {
-    if (!groups || !meId) return { owed: 0, owes: 0, net: 0 };
+    if (!groups || !meEmail) return { owed: 0, owes: 0, net: 0 };
     let owed = 0;
     let owes = 0;
     for (const g of groups) {
       if (g.archived) continue;
       const groupExpenses = (expenses ?? []).filter((e) => e.groupId === g.id);
       const groupSettlements = (settlements ?? []).filter((s) => s.groupId === g.id);
-      const balances = computeNetBalances(groupExpenses, groupSettlements, g.memberIds);
-      const me = balances.get(meId) ?? 0;
+      const memberEmails = g.members.map((m) => m.email);
+      const balances = computeNetBalances(groupExpenses, groupSettlements, memberEmails);
+      const me = balances.get(meEmail) ?? 0;
       if (me > 0) owed += me;
       else if (me < 0) owes += -me;
     }
     return { owed, owes, net: owed - owes };
-  }, [groups, expenses, settlements, meId]);
+  }, [groups, expenses, settlements, meEmail]);
 
   const currency = prefs?.defaultCurrency ?? 'USD';
 
@@ -58,7 +61,7 @@ export function GroupsScreen() {
     <>
       <Header title="Groups" right={<SyncBadge />} />
       <div className="scroll-area px-5 pt-4">
-        {groups.length > 0 && meId && (
+        {groups.length > 0 && (
           <div className="card p-5 mb-5">
             <div className="text-xs text-ink-muted mb-1">Across all groups</div>
             <div className="font-display text-3xl font-semibold tabular-nums">
@@ -100,19 +103,17 @@ export function GroupsScreen() {
           <ul className="space-y-3">
             {groups.map((g) => {
               const groupExpenses = (expenses ?? []).filter((e) => e.groupId === g.id);
-              const groupSettlements = (settlements ?? []).filter(
-                (s) => s.groupId === g.id,
-              );
-              const balances = computeNetBalances(
-                groupExpenses,
-                groupSettlements,
-                g.memberIds,
-              );
-              const me = meId ? balances.get(meId) ?? 0 : 0;
-              const members = g.memberIds
-                .map((id) => peopleById.get(id))
-                .filter((p): p is NonNullable<typeof p> => !!p);
-
+              const groupSettlements = (settlements ?? []).filter((s) => s.groupId === g.id);
+              const memberEmails = g.members.map((m) => m.email);
+              const balances = computeNetBalances(groupExpenses, groupSettlements, memberEmails);
+              const me = meEmail ? balances.get(meEmail) ?? 0 : 0;
+              const memberDisplays = g.members.map((m) => {
+                const p = profileByEmail.get(m.email);
+                return {
+                  name: p?.displayName || m.displayName || displayNameForEmail(m.email),
+                  avatarColor: p?.avatarColor || colorForEmail(m.email),
+                };
+              });
               return (
                 <li key={g.id}>
                   <Link
@@ -125,10 +126,9 @@ export function GroupsScreen() {
                     <div className="flex-1 min-w-0">
                       <div className="font-medium truncate">{g.name}</div>
                       <div className="mt-1 flex items-center gap-2">
-                        <AvatarStack people={members} size={20} />
+                        <AvatarStack people={memberDisplays} size={20} />
                         <span className="text-xs text-ink-muted">
-                          {g.memberIds.length}{' '}
-                          {g.memberIds.length === 1 ? 'member' : 'members'}
+                          {g.members.length} {g.members.length === 1 ? 'member' : 'members'}
                         </span>
                       </div>
                     </div>

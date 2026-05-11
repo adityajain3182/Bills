@@ -5,25 +5,28 @@ import {
   useAllExpenses,
   useAllSettlements,
   useGroups,
-  usePeople,
   usePrefs,
+  useProfiles,
 } from '../db/hooks';
 import { EmptyState } from '../components/EmptyState';
 import { groupByDay } from '../lib/format';
 import { formatMoney } from '../lib/money';
-import { CATEGORIES } from '../types';
+import { CATEGORIES, displayNameForEmail } from '../types';
 import { format } from 'date-fns';
 
 export function ActivityScreen() {
   const expenses = useAllExpenses() ?? [];
   const settlements = useAllSettlements() ?? [];
   const groups = useGroups(true) ?? [];
-  const people = usePeople() ?? [];
+  const profiles = useProfiles() ?? [];
   const prefs = usePrefs();
 
-  const peopleById = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
+  const profileByEmail = useMemo(() => new Map(profiles.map((p) => [p.email, p])), [profiles]);
   const groupsById = useMemo(() => new Map(groups.map((g) => [g.id, g])), [groups]);
-  const meId = prefs?.mePersonId;
+  const meEmail = prefs?.myEmail;
+
+  const displayName = (email: string): string =>
+    email === meEmail ? 'You' : profileByEmail.get(email)?.displayName || displayNameForEmail(email);
 
   type Item =
     | { kind: 'expense'; date: number; expense: (typeof expenses)[number] }
@@ -58,13 +61,7 @@ export function ActivityScreen() {
                       const e = it.expense;
                       const cat = CATEGORIES.find((c) => c.id === e.category) ?? CATEGORIES[0];
                       const group = groupsById.get(e.groupId);
-                      const payers = e.paidBy
-                        .map((p) =>
-                          p.personId === meId
-                            ? 'You'
-                            : peopleById.get(p.personId)?.name ?? '?',
-                        )
-                        .join(' & ');
+                      const payers = e.paidBy.map((p) => displayName(p.email)).join(' & ');
                       return (
                         <li key={e.id}>
                           <Link
@@ -77,8 +74,7 @@ export function ActivityScreen() {
                             <div className="flex-1 min-w-0">
                               <div className="font-medium truncate">{e.description}</div>
                               <div className="text-xs text-ink-muted truncate">
-                                {group?.name ?? 'Group'} · {payers} paid{' '}
-                                {formatMoney(e.amount, e.currency)} ·{' '}
+                                {group?.name ?? 'Group'} · {payers} paid {formatMoney(e.amount, e.currency)} ·{' '}
                                 {format(e.date, 'h:mm a')}
                               </div>
                             </div>
@@ -88,8 +84,6 @@ export function ActivityScreen() {
                     }
                     const s = it.settlement;
                     const group = groupsById.get(s.groupId);
-                    const from = peopleById.get(s.fromPersonId);
-                    const to = peopleById.get(s.toPersonId);
                     return (
                       <li key={`s-${i}-${s.id}`}>
                         <Link
@@ -101,8 +95,7 @@ export function ActivityScreen() {
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="font-medium text-sm truncate">
-                              {(s.fromPersonId === meId ? 'You' : from?.name) ?? '?'} paid{' '}
-                              {(s.toPersonId === meId ? 'you' : to?.name) ?? '?'}
+                              {displayName(s.fromEmail)} paid {displayName(s.toEmail)}
                             </div>
                             <div className="text-xs text-ink-muted">
                               {group?.name ?? 'Group'} · {formatMoney(s.amount, s.currency)} ·{' '}

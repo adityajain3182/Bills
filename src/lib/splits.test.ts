@@ -27,22 +27,22 @@ describe('splitEqual', () => {
 });
 
 describe('computeSplits — equal', () => {
-  it('returns one share per included id', () => {
+  it('returns one share per included email', () => {
     const r = computeSplits({
       totalCents: 1000,
-      memberIds: ['a', 'b', 'c'],
+      memberEmails: ['a@x', 'b@x', 'c@x'],
       method: 'equal',
-      config: { includedIds: ['a', 'b', 'c'] },
+      config: { includedEmails: ['a@x', 'b@x', 'c@x'] },
     });
     expect(r.ok).toBe(true);
-    expect(r.shares.map((s) => s.amount).reduce((a, b) => a + b, 0)).toBe(1000);
+    expect(r.shares.reduce((a, b) => a + b.amount, 0)).toBe(1000);
   });
   it('rejects when nobody included', () => {
     const r = computeSplits({
       totalCents: 1000,
-      memberIds: ['a'],
+      memberEmails: ['a@x'],
       method: 'equal',
-      config: { includedIds: [] },
+      config: { includedEmails: [] },
     });
     expect(r.ok).toBe(false);
   });
@@ -52,18 +52,18 @@ describe('computeSplits — exact', () => {
   it('accepts when amounts sum to total', () => {
     const r = computeSplits({
       totalCents: 1500,
-      memberIds: ['a', 'b'],
+      memberEmails: ['a@x', 'b@x'],
       method: 'exact',
-      config: { amounts: { a: 1000, b: 500 } },
+      config: { amounts: { 'a@x': 1000, 'b@x': 500 } },
     });
     expect(r.ok).toBe(true);
   });
   it('rejects when amounts mismatch', () => {
     const r = computeSplits({
       totalCents: 1500,
-      memberIds: ['a', 'b'],
+      memberEmails: ['a@x', 'b@x'],
       method: 'exact',
-      config: { amounts: { a: 900, b: 500 } },
+      config: { amounts: { 'a@x': 900, 'b@x': 500 } },
     });
     expect(r.ok).toBe(false);
     expect(r.error).toContain('Off');
@@ -74,9 +74,9 @@ describe('computeSplits — percent', () => {
   it('computes amounts and distributes pennies', () => {
     const r = computeSplits({
       totalCents: 1000,
-      memberIds: ['a', 'b', 'c'],
+      memberEmails: ['a@x', 'b@x', 'c@x'],
       method: 'percent',
-      config: { percents: { a: 33.33, b: 33.33, c: 33.34 } },
+      config: { percents: { 'a@x': 33.33, 'b@x': 33.33, 'c@x': 33.34 } },
     });
     expect(r.ok).toBe(true);
     expect(r.shares.reduce((a, b) => a + b.amount, 0)).toBe(1000);
@@ -84,32 +84,32 @@ describe('computeSplits — percent', () => {
   it('rejects sums far from 100', () => {
     const r = computeSplits({
       totalCents: 1000,
-      memberIds: ['a', 'b'],
+      memberEmails: ['a@x', 'b@x'],
       method: 'percent',
-      config: { percents: { a: 50, b: 49 } },
+      config: { percents: { 'a@x': 50, 'b@x': 49 } },
     });
     expect(r.ok).toBe(false);
   });
 });
 
 describe('computeSplits — shares', () => {
-  it('splits proportionally to share counts and reconciles', () => {
+  it('splits proportionally and reconciles', () => {
     const r = computeSplits({
       totalCents: 1000,
-      memberIds: ['a', 'b', 'c'],
+      memberEmails: ['a@x', 'b@x', 'c@x'],
       method: 'shares',
-      config: { shares: { a: 2, b: 1, c: 1 } },
+      config: { shares: { 'a@x': 2, 'b@x': 1, 'c@x': 1 } },
     });
     expect(r.ok).toBe(true);
     expect(r.shares.reduce((a, b) => a + b.amount, 0)).toBe(1000);
-    const a = r.shares.find((s) => s.personId === 'a')!.amount;
-    const b = r.shares.find((s) => s.personId === 'b')!.amount;
+    const a = r.shares.find((s) => s.email === 'a@x')!.amount;
+    const b = r.shares.find((s) => s.email === 'b@x')!.amount;
     expect(a).toBeGreaterThan(b);
   });
   it('rejects when no shares entered', () => {
     const r = computeSplits({
       totalCents: 1000,
-      memberIds: ['a'],
+      memberEmails: ['a@x'],
       method: 'shares',
       config: { shares: {} },
     });

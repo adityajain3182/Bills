@@ -14,7 +14,6 @@ import { SettingsScreen } from './screens/SettingsScreen';
 import { InstallPrompt } from './components/InstallPrompt';
 import { useAuth } from './sync/auth';
 import { syncNow } from './sync/sync';
-import { PendingInvites } from './components/PendingInvites';
 
 export default function App() {
   const prefs = usePrefs();
@@ -72,7 +71,6 @@ export default function App() {
       {!hideTabs && <TabBar />}
       <Toasts />
       <InstallPrompt />
-      <PendingInvites />
     </div>
   );
 }

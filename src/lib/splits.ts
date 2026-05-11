@@ -1,6 +1,6 @@
 import type {
+  Email,
   ExactConfig,
-  ID,
   PercentConfig,
   SharesConfig,
   SplitConfig,
@@ -24,16 +24,15 @@ export function splitEqual(totalCents: number, n: number): number[] {
 
 export interface SplitInputs {
   totalCents: number;
-  memberIds: ID[];
+  memberEmails: Email[];
   method: SplitMethod;
   config: SplitConfig;
 }
 
 export interface SplitResult {
   ok: boolean;
-  shares: SplitShare[]; // empty when not ok
+  shares: SplitShare[];
   error?: string;
-  /** computed sum in cents (useful for live display when invalid) */
   computedSum?: number;
 }
 
@@ -41,7 +40,10 @@ export function computeSplits(input: SplitInputs): SplitResult {
   const { totalCents, method, config } = input;
   switch (method) {
     case 'equal':
-      return computeEqual(totalCents, (config as { includedIds?: ID[] }).includedIds ?? input.memberIds);
+      return computeEqual(
+        totalCents,
+        (config as { includedEmails?: Email[] }).includedEmails ?? input.memberEmails,
+      );
     case 'exact':
       return computeExact(totalCents, (config as ExactConfig).amounts ?? {});
     case 'percent':
@@ -51,23 +53,15 @@ export function computeSplits(input: SplitInputs): SplitResult {
   }
 }
 
-function computeEqual(totalCents: number, includedIds: ID[]): SplitResult {
-  if (!includedIds.length) {
-    return { ok: false, shares: [], error: 'Select at least one person' };
-  }
-  const amounts = splitEqual(totalCents, includedIds.length);
-  const shares: SplitShare[] = includedIds.map((id, i) => ({ personId: id, amount: amounts[i] }));
-  return { ok: true, shares };
+function computeEqual(totalCents: number, includedEmails: Email[]): SplitResult {
+  if (!includedEmails.length) return { ok: false, shares: [], error: 'Select at least one person' };
+  const amounts = splitEqual(totalCents, includedEmails.length);
+  return { ok: true, shares: includedEmails.map((email, i) => ({ email, amount: amounts[i] })) };
 }
 
-function computeExact(
-  totalCents: number,
-  amounts: Record<ID, number>,
-): SplitResult {
+function computeExact(totalCents: number, amounts: Record<Email, number>): SplitResult {
   const entries = Object.entries(amounts).filter(([, v]) => Number.isFinite(v));
-  if (!entries.length) {
-    return { ok: false, shares: [], error: 'Enter amounts' };
-  }
+  if (!entries.length) return { ok: false, shares: [], error: 'Enter amounts' };
   const sum = entries.reduce((a, [, v]) => a + v, 0);
   if (sum !== totalCents) {
     return {
@@ -79,20 +73,14 @@ function computeExact(
   }
   return {
     ok: true,
-    shares: entries.map(([personId, amount]) => ({ personId, amount })),
+    shares: entries.map(([email, amount]) => ({ email, amount })),
     computedSum: sum,
   };
 }
 
-function computePercent(
-  totalCents: number,
-  percents: Record<ID, number>,
-): SplitResult {
+function computePercent(totalCents: number, percents: Record<Email, number>): SplitResult {
   const entries = Object.entries(percents).filter(([, v]) => Number.isFinite(v) && v > 0);
-  if (!entries.length) {
-    return { ok: false, shares: [], error: 'Enter percentages' };
-  }
-  // Allow tiny floating drift, but require sum within 0.01 of 100
+  if (!entries.length) return { ok: false, shares: [], error: 'Enter percentages' };
   const sumPct = entries.reduce((a, [, v]) => a + v, 0);
   if (Math.abs(sumPct - 100) > 0.01) {
     return {
@@ -102,50 +90,40 @@ function computePercent(
       computedSum: Math.round((sumPct / 100) * totalCents),
     };
   }
-
-  // Compute each share floor and distribute remainder by largest-fractional-part
-  const raw = entries.map(([id, p]) => ({ id, exact: (p / 100) * totalCents }));
-  const floors = raw.map((r) => ({ id: r.id, base: Math.floor(r.exact), frac: r.exact - Math.floor(r.exact) }));
+  const raw = entries.map(([email, p]) => ({
+    email,
+    exact: (p / 100) * totalCents,
+  }));
+  const floors = raw.map((r) => ({ email: r.email, base: Math.floor(r.exact), frac: r.exact - Math.floor(r.exact) }));
   const baseSum = floors.reduce((a, b) => a + b.base, 0);
   let remainder = totalCents - baseSum;
   const sorted = [...floors].sort((a, b) => b.frac - a.frac);
-  const assign: Record<ID, number> = {};
-  for (const f of floors) assign[f.id] = f.base;
+  const assign: Record<Email, number> = {};
+  for (const f of floors) assign[f.email] = f.base;
   for (let i = 0; i < sorted.length && remainder > 0; i++) {
-    assign[sorted[i].id] += 1;
+    assign[sorted[i].email] += 1;
     remainder -= 1;
   }
-  return {
-    ok: true,
-    shares: entries.map(([id]) => ({ personId: id, amount: assign[id] })),
-  };
+  return { ok: true, shares: entries.map(([email]) => ({ email, amount: assign[email] })) };
 }
 
-function computeShares(
-  totalCents: number,
-  shares: Record<ID, number>,
-): SplitResult {
-  const entries = Object.entries(shares).filter(
-    ([, v]) => Number.isFinite(v) && v > 0,
-  );
-  if (!entries.length) {
-    return { ok: false, shares: [], error: 'Enter shares' };
-  }
+function computeShares(totalCents: number, shares: Record<Email, number>): SplitResult {
+  const entries = Object.entries(shares).filter(([, v]) => Number.isFinite(v) && v > 0);
+  if (!entries.length) return { ok: false, shares: [], error: 'Enter shares' };
   const totalShares = entries.reduce((a, [, v]) => a + v, 0);
-  // Largest-remainder method against the share total
-  const raw = entries.map(([id, s]) => ({ id, exact: (s / totalShares) * totalCents }));
-  const floors = raw.map((r) => ({ id: r.id, base: Math.floor(r.exact), frac: r.exact - Math.floor(r.exact) }));
+  const raw = entries.map(([email, s]) => ({
+    email,
+    exact: (s / totalShares) * totalCents,
+  }));
+  const floors = raw.map((r) => ({ email: r.email, base: Math.floor(r.exact), frac: r.exact - Math.floor(r.exact) }));
   const baseSum = floors.reduce((a, b) => a + b.base, 0);
   let remainder = totalCents - baseSum;
   const sorted = [...floors].sort((a, b) => b.frac - a.frac);
-  const assign: Record<ID, number> = {};
-  for (const f of floors) assign[f.id] = f.base;
+  const assign: Record<Email, number> = {};
+  for (const f of floors) assign[f.email] = f.base;
   for (let i = 0; i < sorted.length && remainder > 0; i++) {
-    assign[sorted[i].id] += 1;
+    assign[sorted[i].email] += 1;
     remainder -= 1;
   }
-  return {
-    ok: true,
-    shares: entries.map(([id]) => ({ personId: id, amount: assign[id] })),
-  };
+  return { ok: true, shares: entries.map(([email]) => ({ email, amount: assign[email] })) };
 }

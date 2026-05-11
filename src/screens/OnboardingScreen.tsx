@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button } from '../components/Button';
-import { setMePerson } from '../db/queries';
+import { setMyName } from '../db/queries';
 import { useUI } from '../store/ui';
 
 export function OnboardingScreen() {
@@ -16,7 +16,7 @@ export function OnboardingScreen() {
     }
     setSaving(true);
     try {
-      await setMePerson(trimmed);
+      await setMyName(trimmed);
       push(`Welcome, ${trimmed.split(/\s+/)[0]}!`, 'success');
     } catch (e) {
       push((e as Error).message, 'error');
@@ -32,7 +32,7 @@ export function OnboardingScreen() {
       </div>
       <h1 className="font-display text-4xl font-semibold mb-2">Hey there.</h1>
       <p className="text-ink-muted mb-10">
-        Welcome to Tally. Let's get to know each other — what should we call you?
+        Welcome to Tally. What should we call you?
       </p>
 
       <label className="label mb-2 block">Your name</label>
@@ -49,7 +49,7 @@ export function OnboardingScreen() {
         placeholder="e.g. Sam"
       />
       <p className="text-xs text-ink-muted mb-10">
-        Saved on this device only. No account, no sync.
+        Saved on this device. You can sign in with email later to sync across devices.
       </p>
 
       <Button size="lg" onClick={submit} disabled={saving || !name.trim()}>

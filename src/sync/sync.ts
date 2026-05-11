@@ -1,31 +1,38 @@
-import { supabase, cloudEnabled } from './supabase';
+import { cloudEnabled, supabase } from './supabase';
 import { db } from '../db/db';
-import { getAuthUserId } from './auth';
+import { getAuthUserEmail } from './auth';
 import { setSyncRunner } from './scheduler';
-import type { Expense, Group, Person, Settlement } from '../types';
+import type { Expense, Group, GroupMember, Profile, Settlement } from '../types';
+import { LOCAL_OWNER, colorForEmail, displayNameForEmail, normalizeEmail } from '../types';
 
-// Row shapes we send to / receive from Postgres. Field names are snake_case
-// at the SQL boundary; we translate to/from the TS camelCase in this module.
+// ---- Cloud row shapes ----------------------------------------------
 
+interface CloudProfile {
+  user_id: string;
+  email: string;
+  display_name: string;
+  avatar_color: string;
+  default_currency: string;
+  created_at: string;
+  updated_at: string;
+}
 interface CloudGroup {
   id: string;
   name: string;
   emoji: string;
   currency: string;
-  member_ids: string[];
+  owner_email: string;
   archived: boolean;
-  owner_id: string;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
 }
-interface CloudPerson {
-  id: string;
+interface CloudGroupMember {
   group_id: string;
-  name: string;
-  avatar_color: string;
-  linked_user_id: string | null;
-  created_at: string;
+  email: string;
+  display_name: string | null;
+  added_by_email: string | null;
+  added_at: string;
   updated_at: string;
   deleted_at: string | null;
 }
@@ -36,13 +43,12 @@ interface CloudExpense {
   amount: number;
   currency: string;
   date: number;
-  paid_by: unknown;
-  splits: unknown;
+  paid_by: { email: string; amount: number }[];
+  splits: { email: string; amount: number }[];
   split_method: string;
   split_config: unknown;
   category: string;
   notes: string | null;
-  owner_id: string;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -50,13 +56,12 @@ interface CloudExpense {
 interface CloudSettlement {
   id: string;
   group_id: string;
-  from_person_id: string;
-  to_person_id: string;
+  from_email: string;
+  to_email: string;
   amount: number;
   currency: string;
   date: number;
   note: string | null;
-  owner_id: string;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -67,7 +72,7 @@ const toMs = (iso: string | null | undefined): number | undefined =>
 const toIso = (ms: number | undefined): string | null =>
   ms ? new Date(ms).toISOString() : null;
 
-// ---- Status (so the UI can show "Syncing…" / "Up to date") ----------
+// ---- Status pub/sub ------------------------------------------------
 
 export type SyncStatus =
   | { kind: 'idle' }
@@ -75,138 +80,171 @@ export type SyncStatus =
   | { kind: 'ok'; at: number }
   | { kind: 'error'; message: string };
 
-const statusListeners = new Set<(s: SyncStatus) => void>();
+const listeners = new Set<(s: SyncStatus) => void>();
 let status: SyncStatus = { kind: 'idle' };
 function setStatus(next: SyncStatus) {
   status = next;
-  for (const fn of statusListeners) fn(status);
+  for (const fn of listeners) fn(status);
 }
 export function subscribeSync(fn: (s: SyncStatus) => void): () => void {
-  statusListeners.add(fn);
+  listeners.add(fn);
   fn(status);
-  return () => statusListeners.delete(fn);
+  return () => listeners.delete(fn);
 }
 export function getSyncStatus(): SyncStatus {
   return status;
 }
 
-// ---- Core push/pull -------------------------------------------------
+// ---- Network helper ------------------------------------------------
 
-let syncing = false;
-
-// Cap any single network request so a stalled connection on mobile data
-// doesn't leave the UI stuck in "Syncing…" forever.
-const NETWORK_TIMEOUT_MS = 20_000;
-
-function withTimeout<T>(p: PromiseLike<T>, label: string, ms = NETWORK_TIMEOUT_MS): Promise<T> {
+const TIMEOUT_MS = 20_000;
+function withTimeout<T>(p: PromiseLike<T>, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+    const t = setTimeout(() => reject(new Error(`${label} timed out`)), TIMEOUT_MS);
     Promise.resolve(p).then(
       (v) => {
-        clearTimeout(timer);
+        clearTimeout(t);
         resolve(v);
       },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
+      (e) => {
+        clearTimeout(t);
+        reject(e);
       },
     );
   });
 }
+function unwrap<T>(res: { data: T | null; error: { message: string } | null }): T {
+  if (res.error) throw new Error(res.error.message);
+  return (res.data ?? ([] as unknown as T)) as T;
+}
+
+// ---- Main entry -----------------------------------------------------
+
+let syncing = false;
+let queuedAgain = false;
 
 export async function syncNow(): Promise<void> {
   if (!cloudEnabled || !supabase) return;
-  const userId = getAuthUserId();
-  if (!userId) return;
-  if (syncing) return;
+  const myEmail = getAuthUserEmail();
+  if (!myEmail) return;
+  if (syncing) {
+    queuedAgain = true;
+    return;
+  }
   syncing = true;
-  setStatus({ kind: 'running' });
+  setStatus({ kind: 'running', phase: 'Preparing' });
   try {
+    await ensureMyProfile(myEmail);
     setStatus({ kind: 'running', phase: 'Pushing' });
-    await pushDirty(userId);
+    await pushDirty(myEmail);
     setStatus({ kind: 'running', phase: 'Pulling' });
-    await pullSince();
+    await pullSince(myEmail);
     setStatus({ kind: 'ok', at: Date.now() });
   } catch (err) {
-    console.warn('[sync] error', err);
+    console.warn('[sync] failed', err);
     setStatus({ kind: 'error', message: (err as Error).message });
   } finally {
     syncing = false;
+    if (queuedAgain) {
+      queuedAgain = false;
+      // Re-run on the next tick to avoid recursive stack
+      setTimeout(() => void syncNow(), 100);
+    }
   }
 }
 
-async function pushDirty(userId: string): Promise<void> {
+// ---- Profile --------------------------------------------------------
+
+async function ensureMyProfile(myEmail: string): Promise<void> {
+  const prefs = await db.preferences.get('singleton');
+  if (!supabase) return;
+  await withTimeout(
+    supabase
+      .from('profiles')
+      .upsert({
+        // user_id is filled by Postgres via the on-signup trigger; we still
+        // need to identify the row by user_id when updating. Use the auth user
+        // id from the session.
+        email: myEmail,
+        display_name: prefs?.myDisplayName || displayNameForEmail(myEmail),
+        avatar_color: prefs?.myAvatarColor || colorForEmail(myEmail),
+        default_currency: prefs?.defaultCurrency || 'USD',
+      })
+      .then((r) => {
+        // Profiles already get autoCreated on signup. We may not have INSERT
+        // permission if the trigger hasn't fired yet — best effort.
+        if (r.error && !r.error.message.toLowerCase().includes('duplicate')) {
+          // Don't throw — sign-in still works without profile upsert
+          console.warn('[sync] profile upsert', r.error.message);
+        }
+      }),
+    'upsert profile',
+  );
+}
+
+// ---- Push -----------------------------------------------------------
+
+async function pushDirty(myEmail: string): Promise<void> {
   if (!supabase) return;
 
-  // Collect all dirty rows in parallel (4 fast indexed Dexie reads)
-  const [allDirtyGroups, allDirtyPeople, dirtyExpenses, dirtySettlements] =
-    await Promise.all([
-      db.groups.where('dirty').equals(1).toArray(),
-      db.people.where('dirty').equals(1).toArray(),
-      db.expenses.where('dirty').equals(1).toArray(),
-      db.settlements.where('dirty').equals(1).toArray(),
-    ]);
+  // Pull all dirty rows in parallel
+  const [dirtyGroups, dirtyExpenses, dirtySettlements] = await Promise.all([
+    db.groups.where('dirty').equals(1).toArray(),
+    db.expenses.where('dirty').equals(1).toArray(),
+    db.settlements.where('dirty').equals(1).toArray(),
+  ]);
 
-  // Push only groups we own — others were pulled and shouldn't be re-upserted
-  // by us under our owner_id.
-  const myGroups = allDirtyGroups.filter(
-    (g) => !g.ownerId || g.ownerId === userId,
+  // Only push groups that I own. Groups owned by someone else are still
+  // dirty locally if I added an expense or settlement — those go via the
+  // expenses/settlements push instead. The group row itself is read-only
+  // to non-owners.
+  const myGroups = dirtyGroups.filter(
+    (g) => g.ownerEmail === myEmail || g.ownerEmail === LOCAL_OWNER,
   );
 
-  // People are a per-user global pool (the "Me" person has no group). Push
-  // them all — RLS keys off groups.member_ids and linked_user_id.
-  const dirtyPeople = allDirtyPeople;
-
-  // Fast-path: nothing dirty anywhere → skip the network entirely
-  if (
-    !myGroups.length &&
-    !dirtyPeople.length &&
-    !dirtyExpenses.length &&
-    !dirtySettlements.length
-  ) {
+  if (!myGroups.length && !dirtyExpenses.length && !dirtySettlements.length) {
+    // For shared groups we may still have dirty rows belonging to other
+    // owners' groups (e.g. an expense we created) — those went through the
+    // expenses/settlements arrays above. Nothing else to do.
     return;
   }
 
-  // Groups must commit first (FK target for the rest)
+  // 1) Push my groups (FK target for everything else)
   if (myGroups.length) {
     const rows = myGroups.map((g) => ({
       id: g.id,
       name: g.name,
       emoji: g.emoji,
       currency: g.currency,
-      member_ids: g.memberIds,
+      owner_email: myEmail,
       archived: !!g.archived,
-      owner_id: g.ownerId ?? userId,
       updated_at: toIso(g.updatedAt) ?? new Date().toISOString(),
       deleted_at: toIso(g.deletedAt),
     }));
-    const { error } = await withTimeout(supabase.from('groups').upsert(rows), 'push groups');
-    if (error) throw error;
+    const r = await withTimeout(supabase.from('groups').upsert(rows), 'push groups');
+    if (r.error) throw new Error(`groups: ${r.error.message}`);
+
+    // Push members for my groups (full replace per group is simplest and
+    // matches user intent — they edited the member list locally).
+    for (const g of myGroups) {
+      const members = g.members.map((m) => ({
+        group_id: g.id,
+        email: normalizeEmail(m.email),
+        display_name: m.displayName ?? null,
+        added_by_email: myEmail,
+      }));
+      if (members.length) {
+        const mr = await withTimeout(
+          supabase.from('group_members').upsert(members, { onConflict: 'group_id,email' }),
+          'push members',
+        );
+        if (mr.error) throw new Error(`group_members: ${mr.error.message}`);
+      }
+    }
   }
 
-  // The remaining three tables have no inter-FK so they can go in parallel
+  // 2) Push expenses + settlements in parallel
   await Promise.all([
-    dirtyPeople.length
-      ? withTimeout(
-          supabase
-            .from('people')
-            .upsert(
-              dirtyPeople.map((p) => ({
-                id: p.id,
-                group_id: p.groupId ?? null,
-                name: p.name,
-                avatar_color: p.avatarColor,
-                linked_user_id: p.linkedUserId ?? null,
-                updated_at: toIso(p.updatedAt) ?? new Date().toISOString(),
-                deleted_at: toIso(p.deletedAt),
-              })),
-            )
-            .then((r) => {
-              if (r.error) throw r.error;
-            }),
-          'push people',
-        )
-      : Promise.resolve(),
     dirtyExpenses.length
       ? withTimeout(
           supabase
@@ -219,19 +257,18 @@ async function pushDirty(userId: string): Promise<void> {
                 amount: e.amount,
                 currency: e.currency,
                 date: e.date,
-                paid_by: e.paidBy,
-                splits: e.splits,
+                paid_by: e.paidBy.map((p) => ({ email: normalizeEmail(p.email), amount: p.amount })),
+                splits: e.splits.map((s) => ({ email: normalizeEmail(s.email), amount: s.amount })),
                 split_method: e.splitMethod,
                 split_config: e.splitConfig,
                 category: e.category,
                 notes: e.notes ?? null,
-                owner_id: e.ownerId ?? userId,
                 updated_at: toIso(e.updatedAt) ?? new Date().toISOString(),
                 deleted_at: toIso(e.deletedAt),
               })),
             )
             .then((r) => {
-              if (r.error) throw r.error;
+              if (r.error) throw new Error(`expenses: ${r.error.message}`);
             }),
           'push expenses',
         )
@@ -244,63 +281,50 @@ async function pushDirty(userId: string): Promise<void> {
               dirtySettlements.map((s) => ({
                 id: s.id,
                 group_id: s.groupId,
-                from_person_id: s.fromPersonId,
-                to_person_id: s.toPersonId,
+                from_email: normalizeEmail(s.fromEmail),
+                to_email: normalizeEmail(s.toEmail),
                 amount: s.amount,
                 currency: s.currency,
                 date: s.date,
                 note: s.note ?? null,
-                owner_id: s.ownerId ?? userId,
                 updated_at: toIso(s.updatedAt) ?? new Date().toISOString(),
                 deleted_at: toIso(s.deletedAt),
               })),
             )
             .then((r) => {
-              if (r.error) throw r.error;
+              if (r.error) throw new Error(`settlements: ${r.error.message}`);
             }),
           'push settlements',
         )
       : Promise.resolve(),
   ]);
 
-  // Clear dirty flags in bulk per table (single write transaction, no per-row update)
-  await db.transaction(
-    'rw',
-    [db.groups, db.people, db.expenses, db.settlements],
-    async () => {
-      if (myGroups.length) {
-        await db.groups.bulkPut(
-          myGroups.map((g) => ({ ...g, dirty: 0, ownerId: g.ownerId ?? userId })),
-        );
-      }
-      if (dirtyPeople.length) {
-        await db.people.bulkPut(dirtyPeople.map((p) => ({ ...p, dirty: 0 })));
-      }
-      if (dirtyExpenses.length) {
-        await db.expenses.bulkPut(
-          dirtyExpenses.map((e) => ({ ...e, dirty: 0, ownerId: e.ownerId ?? userId })),
-        );
-      }
-      if (dirtySettlements.length) {
-        await db.settlements.bulkPut(
-          dirtySettlements.map((s) => ({ ...s, dirty: 0, ownerId: s.ownerId ?? userId })),
-        );
-      }
-    },
-  );
+  // 3) Clear dirty flags
+  await db.transaction('rw', [db.groups, db.expenses, db.settlements], async () => {
+    if (myGroups.length) {
+      await db.groups.bulkPut(
+        myGroups.map((g) => ({ ...g, ownerEmail: myEmail, dirty: 0 as const })),
+      );
+    }
+    if (dirtyExpenses.length) {
+      await db.expenses.bulkPut(dirtyExpenses.map((e) => ({ ...e, dirty: 0 as const })));
+    }
+    if (dirtySettlements.length) {
+      await db.settlements.bulkPut(dirtySettlements.map((s) => ({ ...s, dirty: 0 as const })));
+    }
+  });
 }
 
-async function pullSince(): Promise<void> {
+// ---- Pull -----------------------------------------------------------
+
+async function pullSince(_myEmail: string): Promise<void> {
   if (!supabase) return;
   const prefs = await db.preferences.get('singleton');
-  const since = prefs?.lastPulledAt ?? 0;
-  // Back the watermark off by a generous buffer to tolerate clock skew.
-  const sinceIso = new Date(since - 60_000).toISOString();
+  const since = (prefs?.lastSyncedAt ?? 0) - 60_000; // skew buffer
+  const sinceIso = new Date(since).toISOString();
   const startedAt = Date.now();
+  const LIMIT = 1000;
 
-  // For a periodic sync we expect nothing changed — cap the response size
-  // so a misbehaving query can't dump the whole table over a slow link.
-  const PULL_LIMIT = 1000;
   const fetchTable = <T>(table: string) =>
     withTimeout(
       supabase!
@@ -308,49 +332,102 @@ async function pullSince(): Promise<void> {
         .select('*')
         .gt('updated_at', sinceIso)
         .order('updated_at', { ascending: true })
-        .limit(PULL_LIMIT)
+        .limit(LIMIT)
         .then(unwrap<T[]>),
       `pull ${table}`,
     );
 
-  const [groups, people, expenses, settlements] = await Promise.all([
+  const [groups, members, expenses, settlements] = await Promise.all([
     fetchTable<CloudGroup>('groups'),
-    fetchTable<CloudPerson>('people'),
+    fetchTable<CloudGroupMember>('group_members'),
     fetchTable<CloudExpense>('expenses'),
     fetchTable<CloudSettlement>('settlements'),
   ]);
 
-  const hasWork =
-    groups.length || people.length || expenses.length || settlements.length;
-
-  if (hasWork) {
-    setStatus({ kind: 'running', phase: 'Saving' });
-    await mergeBulk(groups, people, expenses, settlements);
+  // Need to fetch every member row for any visible group, not just members
+  // newer than `since`, because the group's members live in the same Dexie
+  // row as the group. Easiest: fetch members for each group we just pulled
+  // OR have locally.
+  const groupIds = new Set<string>(groups.map((g) => g.id));
+  for (const g of await db.groups.toArray()) {
+    if (!g.deletedAt) groupIds.add(g.id);
+  }
+  let allMembers: CloudGroupMember[] = members;
+  if (groupIds.size) {
+    const r = await withTimeout(
+      supabase
+        .from('group_members')
+        .select('*')
+        .in('group_id', [...groupIds])
+        .then(unwrap<CloudGroupMember[]>),
+      'pull members full',
+    );
+    allMembers = r;
   }
 
-  await db.preferences.update('singleton', { lastPulledAt: startedAt });
+  // Collect every email we need a profile for
+  const emails = new Set<string>();
+  for (const m of allMembers) emails.add(normalizeEmail(m.email));
+  for (const e of expenses) {
+    for (const p of e.paid_by) emails.add(normalizeEmail(p.email));
+    for (const s of e.splits) emails.add(normalizeEmail(s.email));
+  }
+  for (const s of settlements) {
+    emails.add(normalizeEmail(s.from_email));
+    emails.add(normalizeEmail(s.to_email));
+  }
+  let profiles: CloudProfile[] = [];
+  if (emails.size) {
+    const r = await withTimeout(
+      supabase
+        .from('profiles')
+        .select('*')
+        .in('email', [...emails])
+        .then(unwrap<CloudProfile[]>),
+      'pull profiles',
+    );
+    profiles = r;
+  }
+
+  await mergeBulk(groups, allMembers, expenses, settlements, profiles);
+  await db.preferences.update('singleton', { lastSyncedAt: startedAt });
 }
 
-function unwrap<T>(res: { data: T | null; error: Error | null }): T {
-  if (res.error) throw res.error;
-  return (res.data ?? ([] as unknown as T)) as T;
-}
-
-// Bulk LWW merge — read all locals in one bulkGet per table, decide in memory,
-// then bulkPut. Avoids the get-then-put-per-row pattern that hurts on mobile
-// IndexedDB.
 async function mergeBulk(
   groups: CloudGroup[],
-  people: CloudPerson[],
+  members: CloudGroupMember[],
   expenses: CloudExpense[],
   settlements: CloudSettlement[],
+  profiles: CloudProfile[],
 ): Promise<void> {
+  // Index members by group_id for join
+  const membersByGroup = new Map<string, GroupMember[]>();
+  for (const m of members) {
+    if (m.deleted_at) continue;
+    const arr = membersByGroup.get(m.group_id) ?? [];
+    arr.push({ email: normalizeEmail(m.email), displayName: m.display_name ?? undefined });
+    membersByGroup.set(m.group_id, arr);
+  }
+
   await db.transaction(
     'rw',
-    [db.groups, db.people, db.expenses, db.settlements],
+    [db.groups, db.expenses, db.settlements, db.profiles],
     async () => {
+      // Profiles — straight bulkPut
+      if (profiles.length) {
+        const rows: Profile[] = profiles.map((p) => ({
+          email: normalizeEmail(p.email),
+          displayName: p.display_name || displayNameForEmail(p.email),
+          avatarColor: p.avatar_color || colorForEmail(p.email),
+          userId: p.user_id,
+        }));
+        await db.profiles.bulkPut(rows);
+      }
+
+      // Groups (LWW); attach members from the join
       if (groups.length) {
-        const locals = await db.groups.bulkGet(groups.map((g) => g.id));
+        const ids = groups.map((g) => g.id);
+        const locals = await db.groups.bulkGet(ids);
         const merged: Group[] = [];
         groups.forEach((g, i) => {
           const local = locals[i];
@@ -361,42 +438,39 @@ async function mergeBulk(
             name: g.name,
             emoji: g.emoji,
             currency: g.currency,
-            memberIds: g.member_ids ?? [],
+            ownerEmail: normalizeEmail(g.owner_email),
             archived: g.archived ? 1 : 0,
+            members: membersByGroup.get(g.id) ?? local?.members ?? [],
             createdAt: toMs(g.created_at) ?? Date.now(),
             updatedAt: remoteUpdated,
             deletedAt: toMs(g.deleted_at),
-            ownerId: g.owner_id,
             dirty: 0,
           });
         });
         if (merged.length) await db.groups.bulkPut(merged);
       }
 
-      if (people.length) {
-        const locals = await db.people.bulkGet(people.map((p) => p.id));
-        const merged: Person[] = [];
-        people.forEach((p, i) => {
-          const local = locals[i];
-          const remoteUpdated = new Date(p.updated_at).getTime();
-          if (local?.dirty && (local.updatedAt ?? 0) >= remoteUpdated) return;
-          merged.push({
-            id: p.id,
-            name: p.name,
-            avatarColor: p.avatar_color,
-            createdAt: toMs(p.created_at) ?? Date.now(),
-            updatedAt: remoteUpdated,
-            deletedAt: toMs(p.deleted_at),
-            groupId: p.group_id,
-            linkedUserId: p.linked_user_id ?? undefined,
-            dirty: 0,
-          });
-        });
-        if (merged.length) await db.people.bulkPut(merged);
-      }
+      // Update members on locally-existing groups too (for member changes
+      // pulled without the group itself bumping updated_at — rare, but)
+      const localGroupsToTouch = await db.groups.bulkGet([...membersByGroup.keys()]);
+      const memberOnly: Group[] = [];
+      localGroupsToTouch.forEach((g) => {
+        if (!g) return;
+        const nextMembers = membersByGroup.get(g.id);
+        if (!nextMembers) return;
+        const same =
+          nextMembers.length === g.members.length &&
+          nextMembers.every((m, i) => g.members[i]?.email === m.email);
+        if (!same) {
+          memberOnly.push({ ...g, members: nextMembers });
+        }
+      });
+      if (memberOnly.length) await db.groups.bulkPut(memberOnly);
 
+      // Expenses (LWW)
       if (expenses.length) {
-        const locals = await db.expenses.bulkGet(expenses.map((e) => e.id));
+        const ids = expenses.map((e) => e.id);
+        const locals = await db.expenses.bulkGet(ids);
         const merged: Expense[] = [];
         expenses.forEach((e, i) => {
           const local = locals[i];
@@ -409,24 +483,31 @@ async function mergeBulk(
             amount: Number(e.amount),
             currency: e.currency,
             date: Number(e.date),
-            paidBy: (e.paid_by as Expense['paidBy']) ?? [],
-            splits: (e.splits as Expense['splits']) ?? [],
+            paidBy: (e.paid_by ?? []).map((p) => ({
+              email: normalizeEmail(p.email),
+              amount: p.amount,
+            })),
+            splits: (e.splits ?? []).map((s) => ({
+              email: normalizeEmail(s.email),
+              amount: s.amount,
+            })),
             splitMethod: e.split_method as Expense['splitMethod'],
-            splitConfig: (e.split_config as Expense['splitConfig']) ?? { includedIds: [] },
+            splitConfig: (e.split_config as Expense['splitConfig']) ?? { includedEmails: [] },
             category: e.category,
             notes: e.notes ?? undefined,
             createdAt: toMs(e.created_at) ?? Date.now(),
             updatedAt: remoteUpdated,
             deletedAt: toMs(e.deleted_at),
-            ownerId: e.owner_id,
             dirty: 0,
           });
         });
         if (merged.length) await db.expenses.bulkPut(merged);
       }
 
+      // Settlements (LWW)
       if (settlements.length) {
-        const locals = await db.settlements.bulkGet(settlements.map((s) => s.id));
+        const ids = settlements.map((s) => s.id);
+        const locals = await db.settlements.bulkGet(ids);
         const merged: Settlement[] = [];
         settlements.forEach((s, i) => {
           const local = locals[i];
@@ -435,8 +516,8 @@ async function mergeBulk(
           merged.push({
             id: s.id,
             groupId: s.group_id,
-            fromPersonId: s.from_person_id,
-            toPersonId: s.to_person_id,
+            fromEmail: normalizeEmail(s.from_email),
+            toEmail: normalizeEmail(s.to_email),
             amount: Number(s.amount),
             currency: s.currency,
             date: Number(s.date),
@@ -444,7 +525,6 @@ async function mergeBulk(
             createdAt: toMs(s.created_at) ?? Date.now(),
             updatedAt: remoteUpdated,
             deletedAt: toMs(s.deleted_at),
-            ownerId: s.owner_id,
             dirty: 0,
           });
         });
@@ -454,93 +534,5 @@ async function mergeBulk(
   );
 }
 
-// ---- Invites --------------------------------------------------------
-
-export interface PendingInvite {
-  id: string;
-  groupId: string;
-  groupName: string;
-  invitedEmail: string;
-  invitedBy: string;
-  createdAt: string;
-}
-
-export async function listMyPendingInvites(): Promise<PendingInvite[]> {
-  if (!supabase) return [];
-  const { data, error } = await supabase
-    .from('invites')
-    .select('id, group_id, invited_email, invited_by, created_at, groups(name)')
-    .is('accepted_at', null);
-  if (error) throw error;
-  type Row = {
-    id: string;
-    group_id: string;
-    invited_email: string;
-    invited_by: string;
-    created_at: string;
-    groups: { name: string } | null;
-  };
-  return (data as unknown as Row[]).map((r) => ({
-    id: r.id,
-    groupId: r.group_id,
-    groupName: r.groups?.name ?? '(unknown)',
-    invitedEmail: r.invited_email,
-    invitedBy: r.invited_by,
-    createdAt: r.created_at,
-  }));
-}
-
-export async function inviteToGroup(groupId: string, email: string): Promise<void> {
-  if (!supabase) throw new Error('Cloud sync not configured');
-  const { error } = await supabase
-    .from('invites')
-    .insert({ group_id: groupId, invited_email: email.trim().toLowerCase() });
-  if (error) throw error;
-}
-
-export async function acceptInvite(invite: PendingInvite): Promise<void> {
-  if (!supabase) throw new Error('Cloud sync not configured');
-  const userId = getAuthUserId();
-  if (!userId) throw new Error('Sign in first');
-  // group_members insert is allowed by RLS when accepting your own invite
-  const insert = await supabase
-    .from('group_members')
-    .insert({ group_id: invite.groupId, user_id: userId });
-  if (insert.error) throw insert.error;
-  const upd = await supabase
-    .from('invites')
-    .update({ accepted_at: new Date().toISOString() })
-    .eq('id', invite.id);
-  if (upd.error) throw upd.error;
-  await syncNow();
-}
-
-/** Mark every local row as dirty and reset the pull watermark, then sync.
- *  Useful when something went wrong and you want to force a complete reupload
- *  and redownload without losing local-only data. */
-export async function forceFullResync(): Promise<void> {
-  const now = Date.now();
-  await db.transaction(
-    'rw',
-    [db.groups, db.people, db.expenses, db.settlements, db.preferences],
-    async () => {
-      const dirtyAll = async <T extends { dirty?: 0 | 1; updatedAt?: number }>(
-        table: { toArray: () => Promise<T[]>; bulkPut: (rows: T[]) => Promise<unknown> },
-      ) => {
-        const rows = await table.toArray();
-        if (rows.length) {
-          await table.bulkPut(rows.map((r) => ({ ...r, dirty: 1, updatedAt: now })));
-        }
-      };
-      await dirtyAll(db.groups);
-      await dirtyAll(db.people);
-      await dirtyAll(db.expenses);
-      await dirtyAll(db.settlements);
-      await db.preferences.update('singleton', { lastPulledAt: 0 });
-    },
-  );
-  await syncNow();
-}
-
-// Boot: wire the scheduler so any mutation triggers a sync
+// Wire the mutation-triggered sync
 setSyncRunner(syncNow);
