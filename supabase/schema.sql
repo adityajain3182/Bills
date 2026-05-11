@@ -60,7 +60,7 @@ create index if not exists group_members_user_idx on public.group_members (user_
 
 create table if not exists public.people (
   id              text primary key,
-  group_id        text not null references public.groups on delete cascade,
+  group_id        text references public.groups on delete cascade,
   name            text not null,
   avatar_color    text not null,
   linked_user_id  uuid references auth.users on delete set null,
@@ -68,6 +68,9 @@ create table if not exists public.people (
   updated_at      timestamptz not null default now(),
   deleted_at      timestamptz
 );
+-- people.group_id used to be NOT NULL; drop the constraint if a v1 schema is
+-- still in place so we can hold global ("Me"-style) people too.
+alter table public.people alter column group_id drop not null;
 create index if not exists people_group_idx   on public.people (group_id);
 create index if not exists people_updated_idx on public.people (updated_at);
 
@@ -283,11 +286,11 @@ create policy gm_delete on public.group_members
     or user_id = auth.uid()
   );
 
--- people / expenses / settlements: anyone in the group can do everything
+-- expenses / settlements: anyone in the group can do everything
 do $$
 declare t text;
 begin
-  for t in select unnest(array['people','expenses','settlements']) loop
+  for t in select unnest(array['expenses','settlements']) loop
     execute format('drop policy if exists %1$s_select on public.%1$s;', t);
     execute format('create policy %1$s_select on public.%1$s for select using (public.is_group_member(group_id));', t);
     execute format('drop policy if exists %1$s_insert on public.%1$s;', t);
@@ -299,6 +302,57 @@ begin
   end loop;
 end;
 $$;
+
+-- people: visible if linked to me, or if referenced from any group I can see.
+-- Locally a person is a global (per-user) entity that can appear in many
+-- groups via groups.member_ids[]; the cloud reflects that.
+create or replace function public.can_see_person(p_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.groups g
+     where (g.owner_id = auth.uid()
+            or exists (select 1 from public.group_members m
+                        where m.group_id = g.id and m.user_id = auth.uid()))
+       and p_id = any(g.member_ids)
+  );
+$$;
+
+drop policy if exists people_select on public.people;
+create policy people_select on public.people
+  for select using (
+    linked_user_id = auth.uid()
+    or public.can_see_person(id)
+  );
+
+drop policy if exists people_insert on public.people;
+create policy people_insert on public.people
+  for insert with check (
+    -- I'm claiming this person as myself
+    linked_user_id = auth.uid()
+    -- or it's already attached to a group I can see (covers re-upserts during sync)
+    or (group_id is not null and public.is_group_member(group_id))
+    -- or this person id appears in some group I can see
+    or public.can_see_person(id)
+  );
+
+drop policy if exists people_update on public.people;
+create policy people_update on public.people
+  for update using (
+    linked_user_id = auth.uid() or public.can_see_person(id)
+  ) with check (
+    linked_user_id = auth.uid() or public.can_see_person(id)
+  );
+
+drop policy if exists people_delete on public.people;
+create policy people_delete on public.people
+  for delete using (
+    linked_user_id = auth.uid() or public.can_see_person(id)
+  );
 
 -- invites: you can read invites for your own email; group owner can manage
 drop policy if exists invites_select on public.invites;

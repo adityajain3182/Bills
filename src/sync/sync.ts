@@ -152,7 +152,10 @@ async function pushDirty(userId: string): Promise<void> {
   const myGroups = allDirtyGroups.filter(
     (g) => !g.ownerId || g.ownerId === userId,
   );
-  const dirtyPeople = allDirtyPeople.filter((p) => p.groupId);
+
+  // People are a per-user global pool (the "Me" person has no group). Push
+  // them all — RLS keys off groups.member_ids and linked_user_id.
+  const dirtyPeople = allDirtyPeople;
 
   // Fast-path: nothing dirty anywhere → skip the network entirely
   if (
@@ -190,7 +193,7 @@ async function pushDirty(userId: string): Promise<void> {
             .upsert(
               dirtyPeople.map((p) => ({
                 id: p.id,
-                group_id: p.groupId!,
+                group_id: p.groupId ?? null,
                 name: p.name,
                 avatar_color: p.avatarColor,
                 linked_user_id: p.linkedUserId ?? null,
@@ -509,6 +512,33 @@ export async function acceptInvite(invite: PendingInvite): Promise<void> {
     .update({ accepted_at: new Date().toISOString() })
     .eq('id', invite.id);
   if (upd.error) throw upd.error;
+  await syncNow();
+}
+
+/** Mark every local row as dirty and reset the pull watermark, then sync.
+ *  Useful when something went wrong and you want to force a complete reupload
+ *  and redownload without losing local-only data. */
+export async function forceFullResync(): Promise<void> {
+  const now = Date.now();
+  await db.transaction(
+    'rw',
+    [db.groups, db.people, db.expenses, db.settlements, db.preferences],
+    async () => {
+      const dirtyAll = async <T extends { dirty?: 0 | 1; updatedAt?: number }>(
+        table: { toArray: () => Promise<T[]>; bulkPut: (rows: T[]) => Promise<unknown> },
+      ) => {
+        const rows = await table.toArray();
+        if (rows.length) {
+          await table.bulkPut(rows.map((r) => ({ ...r, dirty: 1, updatedAt: now })));
+        }
+      };
+      await dirtyAll(db.groups);
+      await dirtyAll(db.people);
+      await dirtyAll(db.expenses);
+      await dirtyAll(db.settlements);
+      await db.preferences.update('singleton', { lastPulledAt: 0 });
+    },
+  );
   await syncNow();
 }
 
