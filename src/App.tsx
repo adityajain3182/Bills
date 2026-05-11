@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { usePrefs } from './db/hooks';
 import { TabBar } from './components/TabBar';
@@ -11,10 +12,23 @@ import { FriendsScreen } from './screens/FriendsScreen';
 import { ActivityScreen } from './screens/ActivityScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { InstallPrompt } from './components/InstallPrompt';
+import { useAuth } from './sync/auth';
+import { syncNow } from './sync/sync';
+import { PendingInvites } from './components/PendingInvites';
 
 export default function App() {
   const prefs = usePrefs();
   const location = useLocation();
+  const { user } = useAuth();
+
+  // Sync when the user signs in and whenever the tab regains focus.
+  useEffect(() => {
+    if (!user) return;
+    void syncNow();
+    const onFocus = () => void syncNow();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [user]);
 
   if (prefs === undefined) {
     // initial DB load
@@ -58,6 +72,7 @@ export default function App() {
       {!hideTabs && <TabBar />}
       <Toasts />
       <InstallPrompt />
+      <PendingInvites />
     </div>
   );
 }

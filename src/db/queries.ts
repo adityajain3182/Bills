@@ -11,39 +11,63 @@ import type {
   SplitConfig,
 } from '../types';
 import { AVATAR_COLORS } from '../types';
+import { scheduleSync } from '../sync/scheduler';
+
+// Every mutation goes through stamp() so the sync engine has a reliable
+// updatedAt + dirty flag to work from.
+function stamp<T extends { updatedAt?: number; dirty?: 0 | 1 }>(row: T): T {
+  row.updatedAt = Date.now();
+  row.dirty = 1;
+  return row;
+}
 
 // ---------- People ----------
 
-export async function createPerson(name: string, color?: string): Promise<Person> {
+export async function createPerson(
+  name: string,
+  color?: string,
+  groupId?: string,
+): Promise<Person> {
   const trimmed = name.trim();
   if (!trimmed) throw new Error('Name required');
-  const person: Person = {
+  const person: Person = stamp({
     id: newId(),
     name: trimmed,
     avatarColor: color ?? AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)],
     createdAt: Date.now(),
-  };
+    updatedAt: Date.now(),
+    groupId,
+  });
   await db.people.put(person);
+  scheduleSync();
   return person;
 }
 
 export async function renamePerson(id: string, name: string): Promise<void> {
   const trimmed = name.trim();
   if (!trimmed) throw new Error('Name required');
-  await db.people.update(id, { name: trimmed });
+  const existing = await db.people.get(id);
+  if (!existing) return;
+  await db.people.put(stamp({ ...existing, name: trimmed }));
+  scheduleSync();
 }
 
 export async function deletePerson(id: string): Promise<void> {
-  // Refuse if person is in any group or referenced by expense/settlement
   const groups = await db.groups.toArray();
-  const inGroup = groups.some((g) => g.memberIds.includes(id));
+  const inGroup = groups.some((g) => !g.deletedAt && g.memberIds.includes(id));
   if (inGroup) throw new Error('Person is in a group. Remove them from groups first.');
   const expenses = await db.expenses.toArray();
   const inExpense = expenses.some(
-    (e) => e.paidBy.some((p) => p.personId === id) || e.splits.some((s) => s.personId === id),
+    (e) =>
+      !e.deletedAt &&
+      (e.paidBy.some((p) => p.personId === id) ||
+        e.splits.some((s) => s.personId === id)),
   );
   if (inExpense) throw new Error('Person has expense history.');
-  await db.people.delete(id);
+  const existing = await db.people.get(id);
+  if (!existing) return;
+  await db.people.put(stamp({ ...existing, deletedAt: Date.now() }));
+  scheduleSync();
 }
 
 // ---------- Groups ----------
@@ -57,33 +81,58 @@ export async function createGroup(input: {
   const name = input.name.trim();
   if (!name) throw new Error('Group name required');
   if (!input.memberIds.length) throw new Error('At least one member required');
-  const group: Group = {
+  const group: Group = stamp({
     id: newId(),
     name,
     emoji: input.emoji || '🧾',
     currency: input.currency || 'USD',
     memberIds: [...new Set(input.memberIds)],
     createdAt: Date.now(),
+    updatedAt: Date.now(),
     archived: 0,
-  };
+  });
   await db.groups.put(group);
+  scheduleSync();
   return group;
 }
 
 export async function updateGroup(id: string, patch: Partial<Group>): Promise<void> {
-  await db.groups.update(id, patch);
+  const existing = await db.groups.get(id);
+  if (!existing) return;
+  await db.groups.put(stamp({ ...existing, ...patch }));
+  scheduleSync();
 }
 
 export async function archiveGroup(id: string, archived: boolean): Promise<void> {
-  await db.groups.update(id, { archived: archived ? 1 : 0 });
+  const existing = await db.groups.get(id);
+  if (!existing) return;
+  await db.groups.put(stamp({ ...existing, archived: archived ? 1 : 0 }));
+  scheduleSync();
 }
 
 export async function deleteGroup(id: string): Promise<void> {
-  await db.transaction('rw', db.groups, db.expenses, db.settlements, async () => {
-    await db.expenses.where('groupId').equals(id).delete();
-    await db.settlements.where('groupId').equals(id).delete();
-    await db.groups.delete(id);
-  });
+  const now = Date.now();
+  await db.transaction(
+    'rw',
+    [db.groups, db.expenses, db.settlements, db.people],
+    async () => {
+      const g = await db.groups.get(id);
+      if (g) await db.groups.put(stamp({ ...g, deletedAt: now }));
+      const expenses = await db.expenses.where('groupId').equals(id).toArray();
+      for (const e of expenses) {
+        await db.expenses.put(stamp({ ...e, deletedAt: now }));
+      }
+      const settlements = await db.settlements.where('groupId').equals(id).toArray();
+      for (const s of settlements) {
+        await db.settlements.put(stamp({ ...s, deletedAt: now }));
+      }
+      const people = await db.people.where('groupId').equals(id).toArray();
+      for (const p of people) {
+        await db.people.put(stamp({ ...p, deletedAt: now }));
+      }
+    },
+  );
+  scheduleSync();
 }
 
 // ---------- Expenses ----------
@@ -92,7 +141,7 @@ export interface SaveExpenseInput {
   id?: string;
   groupId: string;
   description: string;
-  amount: number; // cents
+  amount: number;
   currency: string;
   date: number;
   paidBy: PaidBy[];
@@ -104,7 +153,6 @@ export interface SaveExpenseInput {
 }
 
 export async function saveExpense(input: SaveExpenseInput): Promise<Expense> {
-  // Validate
   if (!input.description.trim()) throw new Error('Description required');
   if (input.amount <= 0) throw new Error('Amount must be positive');
   if (!input.paidBy.length) throw new Error('At least one payer required');
@@ -114,7 +162,8 @@ export async function saveExpense(input: SaveExpenseInput): Promise<Expense> {
   if (splitTotal !== input.amount) throw new Error('Splits must sum to total');
 
   const now = Date.now();
-  const expense: Expense = {
+  const existing = input.id ? await db.expenses.get(input.id) : undefined;
+  const expense: Expense = stamp({
     id: input.id ?? newId(),
     groupId: input.groupId,
     description: input.description.trim(),
@@ -127,15 +176,19 @@ export async function saveExpense(input: SaveExpenseInput): Promise<Expense> {
     splitConfig: input.splitConfig,
     category: input.category || 'general',
     notes: input.notes?.trim() || undefined,
-    createdAt: input.id ? (await db.expenses.get(input.id))?.createdAt ?? now : now,
+    createdAt: existing?.createdAt ?? now,
     updatedAt: now,
-  };
+  });
   await db.expenses.put(expense);
+  scheduleSync();
   return expense;
 }
 
 export async function deleteExpense(id: string): Promise<void> {
-  await db.expenses.delete(id);
+  const existing = await db.expenses.get(id);
+  if (!existing) return;
+  await db.expenses.put(stamp({ ...existing, deletedAt: Date.now() }));
+  scheduleSync();
 }
 
 // ---------- Settlements ----------
@@ -152,7 +205,7 @@ export async function saveSettlement(input: {
 }): Promise<Settlement> {
   if (input.fromPersonId === input.toPersonId) throw new Error('Payer and recipient must differ');
   if (input.amount <= 0) throw new Error('Amount must be positive');
-  const s: Settlement = {
+  const s: Settlement = stamp({
     id: input.id ?? newId(),
     groupId: input.groupId,
     fromPersonId: input.fromPersonId,
@@ -162,13 +215,18 @@ export async function saveSettlement(input: {
     date: input.date,
     note: input.note?.trim() || undefined,
     createdAt: Date.now(),
-  };
+    updatedAt: Date.now(),
+  });
   await db.settlements.put(s);
+  scheduleSync();
   return s;
 }
 
 export async function deleteSettlement(id: string): Promise<void> {
-  await db.settlements.delete(id);
+  const existing = await db.settlements.get(id);
+  if (!existing) return;
+  await db.settlements.put(stamp({ ...existing, deletedAt: Date.now() }));
+  scheduleSync();
 }
 
 // ---------- Preferences ----------

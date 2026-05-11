@@ -5,6 +5,7 @@ import { Header } from '../components/Header';
 import { EmptyState } from '../components/EmptyState';
 import { Fab } from '../components/Fab';
 import { Button } from '../components/Button';
+import { SyncBadge } from '../components/SyncBadge';
 import { CreateGroupSheet } from './CreateGroupSheet';
 import { computeNetBalances } from '../lib/balances';
 import { formatMoney, formatMoneyAbs } from '../lib/money';
@@ -55,7 +56,7 @@ export function GroupsScreen() {
 
   return (
     <>
-      <Header title="Groups" />
+      <Header title="Groups" right={<SyncBadge />} />
       <div className="scroll-area px-5 pt-4">
         {groups.length > 0 && meId && (
           <div className="card p-5 mb-5">

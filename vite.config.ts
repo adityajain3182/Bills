@@ -57,6 +57,17 @@ export default defineConfig(({ mode }) => {
         },
       }),
     ],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            supabase: ['@supabase/supabase-js'],
+            react: ['react', 'react-dom', 'react-router-dom'],
+            dexie: ['dexie', 'dexie-react-hooks'],
+          },
+        },
+      },
+    },
     test: {
       globals: true,
       environment: 'jsdom',
