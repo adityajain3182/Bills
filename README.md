@@ -85,9 +85,18 @@ By default the app is fully local — your data only lives on this device. Enabl
 
 1. **Create a Supabase project** at [supabase.com](https://supabase.com). Note the project URL and the **anon/public** key from **Project Settings → API**.
 2. **Enable email auth**: **Authentication → Providers → Email** is enabled by default. Under **Authentication → URL Configuration**, set **Site URL** to your deployed app URL (e.g. `https://<user>.github.io/Bills/`) and add the same URL plus `http://localhost:5173/Bills/` to **Redirect URLs**.
-3. **Run the schema**: open **SQL Editor**, paste `supabase/schema.sql` from this repo, run it. This creates the tables (`groups`, `people`, `expenses`, `settlements`, `group_members`, `invites`, `profiles`), the row-level security policies, an `auth.users` trigger that auto-creates a profile + accepts pending invites on signup, and an `updated_at` trigger.
-4. **Local dev**: copy `.env.example` to `.env.local` and fill in `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY`. Restart `npm run dev`.
-5. **Production**: add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as **GitHub Actions repo secrets** (Repo → Settings → Secrets and variables → Actions). The deploy workflow passes them at build time. If you don't set them, the deployed app silently falls back to local-only mode.
+3. **Run the schema**: open **SQL Editor**, paste `supabase/schema.sql` from this repo, run it. This creates the tables (`groups`, `people`, `expenses`, `settlements`, `group_members`, `invites`, `profiles`), the row-level security policies, an `auth.users` trigger that auto-creates a profile + accepts pending invites on signup, and an `updated_at` trigger. Re-runnable — safe to re-run after pulling a new schema version.
+4. **(Recommended) Add Google sign-in** so you aren't dependent on Supabase's email rate limit:
+   - In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create an **OAuth 2.0 Client ID** (Web application). Add `https://<your-supabase-ref>.supabase.co/auth/v1/callback` as an authorized redirect URI.
+   - In Supabase → **Authentication → Providers → Google**, paste the Client ID + Secret and enable it.
+   - The "Continue with Google" button in the app now works — no email round-trip.
+5. **(Optional) Custom SMTP** for higher email rate limits — Supabase's built-in mailer is capped at a few per hour. **Authentication → Emails → SMTP Settings** lets you plug in SendGrid / Resend / Postmark / your own mail server.
+6. **Local dev**: copy `.env.example` to `.env.local` and fill in `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY`. Restart `npm run dev`.
+7. **Production**: add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as **GitHub Actions repo secrets** (Repo → Settings → Secrets and variables → Actions). The deploy workflow passes them at build time. If you don't set them, the deployed app silently falls back to local-only mode.
+
+### Migrations
+
+If you ran an earlier version of `supabase/schema.sql` and want to apply only the incremental changes, the SQL files in `supabase/migrations/` are idempotent and small enough to paste straight into the SQL editor. Re-running the full schema is also fine — it's written to be re-runnable.
 
 ### How sync works
 

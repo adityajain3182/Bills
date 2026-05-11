@@ -17,7 +17,7 @@ import { Avatar } from '../components/Avatar';
 import { AuthSheet } from '../components/AuthSheet';
 import { useAuth, signOut } from '../sync/auth';
 import { cloudEnabled } from '../sync/supabase';
-import { subscribeSync, syncNow, type SyncStatus } from '../sync/sync';
+import { forceFullResync, subscribeSync, syncNow, type SyncStatus } from '../sync/sync';
 import { formatDistanceToNow } from 'date-fns';
 
 export function SettingsScreen() {
@@ -127,6 +127,20 @@ export function SettingsScreen() {
                     Sign out
                   </Button>
                 </div>
+                <button
+                  onClick={async () => {
+                    push('Forcing full re-sync…', 'info');
+                    try {
+                      await forceFullResync();
+                      push('Full re-sync complete', 'success');
+                    } catch (e) {
+                      push((e as Error).message, 'error');
+                    }
+                  }}
+                  className="text-xs text-ink-muted underline w-full text-center pt-1"
+                >
+                  Force full re-sync
+                </button>
               </div>
             ) : (
               <div className="space-y-3">
