@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+}
+
+html, body, #root {
+  height: 100%;
+  background-color: #f5efe4;
+}
+
+body {
+  font-family: 'Manrope', system-ui, sans-serif;
+  color: #2a2620;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior-y: contain;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@layer base {
+  h1, h2, h3, .display {
+    font-family: 'Fraunces', Georgia, serif;
+    font-feature-settings: 'ss01' on;
+    letter-spacing: -0.01em;
+  }
+  button { -webkit-tap-highlight-color: transparent; }
+  input, textarea, select { font-family: inherit; }
+}
+
+@layer components {
+  .app-shell {
+    @apply mx-auto w-full max-w-[480px] min-h-full flex flex-col bg-cream relative;
+  }
+  .card {
+    @apply bg-surface rounded-card shadow-card border border-line/60;
+  }
+  .ghost-btn {
+    @apply text-ink-muted hover:text-ink active:scale-[0.98] transition;
+  }
+  .pill {
+    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium;
+  }
+  .input {
+    @apply w-full bg-cream/70 border border-line rounded-xl px-4 py-3 text-ink placeholder:text-ink-soft focus:outline-none focus:border-forest focus:bg-surface;
+  }
+  .label {
+    @apply text-xs font-semibold uppercase tracking-wider text-ink-muted;
+  }
+  .scroll-area {
+    @apply overflow-y-auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: max(96px, calc(96px + var(--safe-bottom)));
+  }
+}
+
+/* Hide number input spinners */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number] { -moz-appearance: textfield; }
+
+.swipe-row {
+  touch-action: pan-y;
+}
+
+.no-tap-zoom {
+  font-size: 16px; /* prevent iOS zoom on input focus */
+}
