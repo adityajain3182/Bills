@@ -38,7 +38,6 @@ export function GroupDetailScreen() {
   const push = useUI((s) => s.pushToast);
 
   const [tab, setTab] = useState<Tab>('expenses');
-  const [simplified, setSimplified] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -132,8 +131,7 @@ export function GroupDetailScreen() {
         )}
         {tab === 'balances' && (
           <BalancesTab
-            simplified={simplified}
-            setSimplified={setSimplified}
+            simplified={(prefs?.simplifyDebts ?? 1) === 1}
             balances={balances}
             expenses={expenses}
             settlements={settlements}
@@ -342,7 +340,6 @@ function ExpensesTab({
 
 function BalancesTab({
   simplified,
-  setSimplified,
   balances,
   expenses,
   settlements,
@@ -352,7 +349,6 @@ function BalancesTab({
   onSettle,
 }: {
   simplified: boolean;
-  setSimplified: (v: boolean) => void;
   balances: Map<string, number>;
   expenses: ReturnType<typeof useGroupExpenses> extends infer T ? Exclude<T, undefined> : never;
   settlements: ReturnType<typeof useGroupSettlements> extends infer T ? Exclude<T, undefined> : never;
@@ -403,14 +399,11 @@ function BalancesTab({
 
       <div className="flex items-center justify-between mb-3">
         <div className="text-xs uppercase tracking-wider text-ink-muted">
-          {simplified ? 'Simplified' : 'Who owes whom'}
+          {simplified ? 'Simplified payments' : 'Who owes whom'}
         </div>
-        <button
-          onClick={() => setSimplified(!simplified)}
-          className="text-xs text-forest font-medium px-2 py-1 rounded-full hover:bg-forest/8"
-        >
-          {simplified ? 'Show all debts' : 'Simplify'}
-        </button>
+        <span className="text-[11px] text-ink-soft">
+          {simplified ? 'Toggle in Settings to see raw debts' : 'Toggle in Settings to simplify'}
+        </span>
       </div>
 
       {debts.length === 0 ? (

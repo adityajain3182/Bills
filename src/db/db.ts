@@ -97,6 +97,20 @@ export class BillsDB extends Dexie {
             });
         }
       });
+
+    // v5 — introduce the simplifyDebts preference. Existing users default
+    // to enabled (1) so behaviour doesn't change for anyone who'd already
+    // been using the (then-implicit) simplified view.
+    this.version(5).upgrade(async (tx) => {
+      await tx
+        .table('preferences')
+        .toCollection()
+        .modify((row: Record<string, unknown>) => {
+          if (row.simplifyDebts !== 0 && row.simplifyDebts !== 1) {
+            row.simplifyDebts = 1;
+          }
+        });
+    });
   }
 }
 
