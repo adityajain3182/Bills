@@ -54,7 +54,6 @@ describe('computeNetBalances', () => {
       currency: 'USD',
       date: 0,
       createdAt: 0,
-      updatedAt: 0,
     };
     const bals = computeNetBalances([exp], [settlement], ['a', 'b']);
     expect(bals.get('a')).toBe(0);

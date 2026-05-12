@@ -30,10 +30,6 @@ jobs:
           # Match the repo path under github.io. For repo "Bills" this becomes "/Bills/".
           # If you publish to a custom domain, set VITE_BASE_PATH to "/" instead.
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
-          # Cloud sync is enabled when both of these are set. Leave the secrets
-          # unset to ship the app in pure local-only mode.
-          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: npm run build
       - name: Add SPA 404 fallback
         run: cp dist/index.html dist/404.html

@@ -1,11 +1,5 @@
 import Dexie, { type Table } from 'dexie';
-import type {
-  Person,
-  Group,
-  Expense,
-  Settlement,
-  Preferences,
-} from '../types';
+import type { Person, Group, Expense, Settlement, Preferences } from '../types';
 
 export class BillsDB extends Dexie {
   people!: Table<Person, string>;
@@ -16,6 +10,7 @@ export class BillsDB extends Dexie {
 
   constructor() {
     super('bills-db');
+    // v1 was the original local-only schema.
     this.version(1).stores({
       people: 'id, name, createdAt',
       groups: 'id, name, archived, createdAt',
@@ -23,28 +18,34 @@ export class BillsDB extends Dexie {
       settlements: 'id, groupId, fromPersonId, toPersonId, date, [groupId+date]',
       preferences: 'id',
     });
-    // v2: add sync fields. The schema migration adds the index, and we
-    // initialize updatedAt = createdAt for existing rows.
-    this.version(2)
+    // v2 added sync indexes for the (now-removed) Supabase integration.
+    this.version(2).stores({
+      people: 'id, name, groupId, createdAt, updatedAt, dirty',
+      groups: 'id, name, archived, createdAt, updatedAt, dirty',
+      expenses: 'id, groupId, date, createdAt, updatedAt, dirty, [groupId+date]',
+      settlements:
+        'id, groupId, fromPersonId, toPersonId, date, createdAt, updatedAt, dirty, [groupId+date]',
+      preferences: 'id',
+    });
+    // v3 — back to local-only. Drop the sync indexes (the underlying fields
+    // can stay on existing rows; they're harmless) and clean up any cloud
+    // bookkeeping in preferences.
+    this.version(3)
       .stores({
-        people: 'id, name, groupId, createdAt, updatedAt, dirty',
-        groups: 'id, name, archived, createdAt, updatedAt, dirty',
-        expenses: 'id, groupId, date, createdAt, updatedAt, dirty, [groupId+date]',
-        settlements:
-          'id, groupId, fromPersonId, toPersonId, date, createdAt, updatedAt, dirty, [groupId+date]',
+        people: 'id, name, createdAt',
+        groups: 'id, name, archived, createdAt',
+        expenses: 'id, groupId, date, createdAt, [groupId+date]',
+        settlements: 'id, groupId, fromPersonId, toPersonId, date, [groupId+date]',
         preferences: 'id',
       })
       .upgrade(async (tx) => {
-        for (const table of ['people', 'groups', 'expenses', 'settlements'] as const) {
-          await tx
-            .table(table)
-            .toCollection()
-            .modify((row: Record<string, unknown>) => {
-              if (typeof row.updatedAt !== 'number') {
-                row.updatedAt = typeof row.createdAt === 'number' ? row.createdAt : Date.now();
-              }
-            });
-        }
+        await tx
+          .table('preferences')
+          .toCollection()
+          .modify((row: Record<string, unknown>) => {
+            delete row.lastPulledAt;
+            delete row.authUserId;
+          });
       });
   }
 }
@@ -52,6 +53,5 @@ export class BillsDB extends Dexie {
 export const db = new BillsDB();
 
 export const newId = (): string =>
-  // RFC4122-ish — sufficient for client-side IDs
-  (globalThis.crypto?.randomUUID?.() ??
-    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
+  globalThis.crypto?.randomUUID?.() ??
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
