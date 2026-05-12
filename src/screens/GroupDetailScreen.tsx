@@ -23,6 +23,7 @@ import { CATEGORIES } from '../types';
 import { format } from 'date-fns';
 import { groupByDay } from '../lib/format';
 import { SwipeRow } from '../components/SwipeRow';
+import { EditGroupSheet } from '../components/EditGroupSheet';
 
 type Tab = 'expenses' | 'balances' | 'activity';
 
@@ -39,6 +40,7 @@ export function GroupDetailScreen() {
   const [tab, setTab] = useState<Tab>('expenses');
   const [simplified, setSimplified] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [pendingDeleteExpense, setPendingDeleteExpense] = useState<string | null>(null);
   const [pendingDeleteSettlement, setPendingDeleteSettlement] = useState<string | null>(null);
@@ -164,6 +166,16 @@ export function GroupDetailScreen() {
           <Button
             full
             variant="secondary"
+            onClick={() => {
+              setMenuOpen(false);
+              setEditOpen(true);
+            }}
+          >
+            Edit group details
+          </Button>
+          <Button
+            full
+            variant="secondary"
             onClick={async () => {
               await archiveGroup(group.id, !group.archived);
               push(group.archived ? 'Group unarchived' : 'Group archived', 'success');
@@ -184,6 +196,8 @@ export function GroupDetailScreen() {
           </Button>
         </div>
       </Sheet>
+
+      <EditGroupSheet open={editOpen} onClose={() => setEditOpen(false)} group={group} />
 
       <ConfirmSheet
         open={confirmDelete}

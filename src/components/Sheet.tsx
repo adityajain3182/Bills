@@ -13,24 +13,43 @@ interface Props {
 
 export function Sheet({ open, onClose, title, children, large, footer }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
+  // Keep onClose in a ref so the Escape-key effect can read the latest
+  // version without re-binding (which would otherwise also re-trigger the
+  // auto-focus side-effect on every parent rerender — the source of the
+  // "cursor jumps to ✕ after typing" bug).
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
+  // Lock body scroll + initial auto-focus. Runs ONLY when the sheet opens
+  // and closes — never on parent rerenders triggered by inputs inside.
   useEffect(() => {
     if (!open) return;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    const focusTarget = panelRef.current?.querySelector<HTMLElement>(
-      'input, button, textarea, select, [tabindex]:not([tabindex="-1"])',
-    );
+    // Prefer a form input over a button so we don't grab focus from the
+    // close button when there's nothing better. Falls back to any
+    // focusable element if no input exists in the panel.
+    const panel = panelRef.current;
+    const focusTarget =
+      panel?.querySelector<HTMLElement>('input, textarea, select') ??
+      panel?.querySelector<HTMLElement>('button, [tabindex]:not([tabindex="-1"])');
     focusTarget?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
     return () => {
       document.body.style.overflow = prevOverflow;
-      window.removeEventListener('keydown', onKey);
     };
-  }, [open, onClose]);
+  }, [open]);
+
+  // Escape-to-close. Re-binds when open flips, never because of input churn.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCloseRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
 
   if (!open) return null;
 

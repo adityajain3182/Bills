@@ -1,24 +1,33 @@
 import { type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { parentRouteFor } from '../lib/nav';
 
 interface Props {
   title: ReactNode;
   subtitle?: ReactNode;
-  back?: boolean;
+  /** If true, show a back button that navigates to the logical parent route
+   *  (computed from the current pathname). If a string is given, that
+   *  explicit route is used instead. */
+  back?: boolean | string;
   right?: ReactNode;
 }
 
 export function Header({ title, subtitle, back, right }: Props) {
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const backTarget =
+    back === true ? parentRouteFor(location.pathname) : typeof back === 'string' ? back : null;
+
   return (
     <header
       className="sticky top-0 z-30 bg-cream/95 backdrop-blur border-b border-line/60"
       style={{ paddingTop: 'var(--safe-top)' }}
     >
       <div className="flex items-center gap-2 px-4 h-14">
-        {back && (
+        {backTarget && (
           <button
-            onClick={() => navigate(-1)}
+            onClick={() => navigate(backTarget)}
             className="-ml-2 h-10 w-10 rounded-full hover:bg-cream flex items-center justify-center text-ink"
             aria-label="Back"
           >
