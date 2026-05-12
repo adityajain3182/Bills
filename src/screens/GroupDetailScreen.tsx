@@ -397,13 +397,20 @@ function BalancesTab({
         </ul>
       </div>
 
-      <div className="flex items-center justify-between mb-3">
-        <div className="text-xs uppercase tracking-wider text-ink-muted">
-          {simplified ? 'Simplified payments' : 'Who owes whom'}
+      <div className="mb-3">
+        <div className="flex items-center justify-between">
+          <div className="text-xs uppercase tracking-wider text-ink-muted">
+            {simplified ? 'Simplified payments (this group)' : 'Who owes whom'}
+          </div>
+          <span className="text-[11px] text-ink-soft">
+            {simplified ? 'Toggle in Settings to see raw debts' : 'Toggle in Settings to simplify'}
+          </span>
         </div>
-        <span className="text-[11px] text-ink-soft">
-          {simplified ? 'Toggle in Settings to see raw debts' : 'Toggle in Settings to simplify'}
-        </span>
+        {simplified && (
+          <p className="text-[11px] text-ink-muted mt-1">
+            See the Friends tab for one combined payment per person across every group.
+          </p>
+        )}
       </div>
 
       {debts.length === 0 ? (
