@@ -47,6 +47,56 @@ export class BillsDB extends Dexie {
             delete row.authUserId;
           });
       });
+
+    // v4 — reset for the offline-only rewrite. Some prior builds wrote
+    // groups in an email-based shape (`members: [{email, …}]`, no
+    // `memberIds`) which crashes the current code that expects
+    // `memberIds: string[]`. Detect that shape and wipe affected tables
+    // so the user starts from a clean slate. Pure v1/v2 rows pass
+    // through untouched.
+    this.version(4)
+      .stores({
+        people: 'id, name, createdAt',
+        groups: 'id, name, archived, createdAt',
+        expenses: 'id, groupId, date, createdAt, [groupId+date]',
+        settlements: 'id, groupId, fromPersonId, toPersonId, date, [groupId+date]',
+        preferences: 'id',
+      })
+      .upgrade(async (tx) => {
+        // Strip any leftover cloud bookkeeping from preferences (handles
+        // the case where the v3 upgrade was skipped because the user came
+        // from an off-trunk schema).
+        await tx
+          .table('preferences')
+          .toCollection()
+          .modify((row: Record<string, unknown>) => {
+            delete row.lastPulledAt;
+            delete row.authUserId;
+            delete row.myEmail;
+            delete row.myDisplayName;
+            delete row.myAvatarColor;
+          });
+
+        const groups = await tx.table('groups').toArray();
+        const hasEmailShape = groups.some(
+          (g: Record<string, unknown>) =>
+            'members' in g || !Array.isArray(g.memberIds),
+        );
+        if (hasEmailShape) {
+          await tx.table('groups').clear();
+          await tx.table('expenses').clear();
+          await tx.table('settlements').clear();
+          await tx.table('people').clear();
+          // Also clear mePersonId so onboarding kicks in cleanly.
+          await tx
+            .table('preferences')
+            .toCollection()
+            .modify((row: Record<string, unknown>) => {
+              row.mePersonId = null;
+              row.onboarded = 0;
+            });
+        }
+      });
   }
 }
 

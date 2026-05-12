@@ -2,6 +2,15 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from './db';
 import type { Expense, Group, Person, Preferences, Settlement } from '../types';
 
+// Defensive: a corrupt or partially-migrated row may be missing memberIds.
+// Coerce to an empty array so the UI never crashes — the user can fix the
+// group from the detail screen.
+function normalizeGroup(g: Group | undefined): Group | undefined {
+  if (!g) return g;
+  if (!Array.isArray(g.memberIds)) return { ...g, memberIds: [] };
+  return g;
+}
+
 export function usePrefs(): Preferences | undefined {
   return useLiveQuery(() => db.preferences.get('singleton'));
 }
@@ -16,13 +25,18 @@ export function usePerson(id: string | undefined): Person | undefined {
 
 export function useGroups(includeArchived = false): Group[] | undefined {
   return useLiveQuery(async () => {
-    const all = await db.groups.orderBy('createdAt').reverse().toArray();
+    const all = (await db.groups.orderBy('createdAt').reverse().toArray()).map(
+      (g) => normalizeGroup(g)!,
+    );
     return includeArchived ? all : all.filter((g) => !g.archived);
   }, [includeArchived]);
 }
 
 export function useGroup(id: string | undefined): Group | undefined {
-  return useLiveQuery(async () => (id ? db.groups.get(id) : undefined), [id]);
+  return useLiveQuery(
+    async () => (id ? normalizeGroup(await db.groups.get(id)) : undefined),
+    [id],
+  );
 }
 
 export function useGroupExpenses(groupId: string | undefined): Expense[] | undefined {
