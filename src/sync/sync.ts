@@ -1,6 +1,6 @@
 import { cloudEnabled, supabase } from './supabase';
 import { db } from '../db/db';
-import { getAuthUserEmail } from './auth';
+import { getAuthUserEmail, getAuthUserId } from './auth';
 import { setSyncRunner } from './scheduler';
 import type { Expense, Group, GroupMember, Profile, Settlement } from '../types';
 import { LOCAL_OWNER, colorForEmail, displayNameForEmail, normalizeEmail } from '../types';
@@ -156,30 +156,24 @@ export async function syncNow(): Promise<void> {
 // ---- Profile --------------------------------------------------------
 
 async function ensureMyProfile(myEmail: string): Promise<void> {
-  const prefs = await db.preferences.get('singleton');
   if (!supabase) return;
-  await withTimeout(
-    supabase
-      .from('profiles')
-      .upsert({
-        // user_id is filled by Postgres via the on-signup trigger; we still
-        // need to identify the row by user_id when updating. Use the auth user
-        // id from the session.
+  const userId = getAuthUserId();
+  if (!userId) return;
+  const prefs = await db.preferences.get('singleton');
+  const r = await withTimeout(
+    supabase.from('profiles').upsert(
+      {
+        user_id: userId,
         email: myEmail,
         display_name: prefs?.myDisplayName || displayNameForEmail(myEmail),
         avatar_color: prefs?.myAvatarColor || colorForEmail(myEmail),
         default_currency: prefs?.defaultCurrency || 'USD',
-      })
-      .then((r) => {
-        // Profiles already get autoCreated on signup. We may not have INSERT
-        // permission if the trigger hasn't fired yet — best effort.
-        if (r.error && !r.error.message.toLowerCase().includes('duplicate')) {
-          // Don't throw — sign-in still works without profile upsert
-          console.warn('[sync] profile upsert', r.error.message);
-        }
-      }),
+      },
+      { onConflict: 'user_id' },
+    ),
     'upsert profile',
   );
+  if (r.error) throw new Error(`profile: ${r.error.message}`);
 }
 
 // ---- Push -----------------------------------------------------------

@@ -246,8 +246,22 @@ export async function deleteSettlement(id: string): Promise<void> {
 
 // ---------- Preferences / onboarding ----------
 
+// Fields on Preferences that are mirrored to the cloud `profiles` row.
+// Changing any of them should trigger a sync so the change propagates.
+const PROFILE_FIELDS = new Set<keyof Preferences>([
+  'myDisplayName',
+  'myAvatarColor',
+  'defaultCurrency',
+]);
+
 export async function updatePrefs(patch: Partial<Preferences>): Promise<void> {
   await db.preferences.update('singleton', patch);
+  for (const k of Object.keys(patch) as (keyof Preferences)[]) {
+    if (PROFILE_FIELDS.has(k)) {
+      scheduleSync();
+      return;
+    }
+  }
 }
 
 export async function setMyName(name: string): Promise<void> {
@@ -268,6 +282,7 @@ export async function setMyName(name: string): Promise<void> {
     avatarColor: profile?.avatarColor ?? prefs.myAvatarColor ?? AVATAR_COLORS[0],
     userId: profile?.userId,
   });
+  scheduleSync();
 }
 
 /**

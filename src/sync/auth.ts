@@ -54,6 +54,10 @@ export function getAuthUserEmail(): string | null {
   return current.user?.email ? normalizeEmail(current.user.email) : null;
 }
 
+export function getAuthUserId(): string | null {
+  return current.user?.id ?? null;
+}
+
 function friendlyAuthError(message: string): string {
   const m = message.toLowerCase();
   if (m.includes('rate limit') || m.includes('over_email_send_rate_limit')) {
