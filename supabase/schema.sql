@@ -196,10 +196,12 @@ create trigger on_auth_user_created
 -- Helpers (SECURITY DEFINER so they bypass RLS recursion)
 ------------------------------------------------------------------------
 
+-- Read the email from the JWT directly. Faster than joining auth.users, and
+-- doesn't depend on the function owner having SELECT on auth.users (which
+-- has tripped people up on stricter Supabase setups).
 create or replace function public.my_email()
-returns text language sql stable security definer
-set search_path = public, auth
-as $$ select lower(email) from auth.users where id = auth.uid() $$;
+returns text language sql stable
+as $$ select lower(coalesce(auth.jwt() ->> 'email', '')) $$;
 
 create or replace function public.is_in_group(g_id uuid)
 returns boolean language sql stable security definer

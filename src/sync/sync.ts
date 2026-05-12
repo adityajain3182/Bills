@@ -134,8 +134,31 @@ export async function syncNow(): Promise<void> {
   syncing = true;
   setStatus({ kind: 'running', phase: 'Preparing' });
   try {
-    await ensureMyProfile(myEmail);
+    // Sanity check: confirm the supabase client actually has a fresh session
+    // attached. Without this, push would fail RLS with the cryptic
+    // "new row violates row-level security policy" because auth.uid() is null
+    // and my_email() returns null, making the policy check NULL → false.
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !userData?.user) {
+      throw new Error(
+        `Not signed in (${userErr?.message ?? 'no user'}). Sign out and back in to refresh the session.`,
+      );
+    }
+    const serverEmail = userData.user.email?.toLowerCase() ?? null;
+    if (!serverEmail) {
+      throw new Error("Your account doesn't have an email attached.");
+    }
+    if (serverEmail !== myEmail) {
+      // The client's idea of the user and the server's disagree. This can
+      // happen if you signed in twice with different emails — recover by
+      // forcing the client's view to match the server.
+      throw new Error(
+        `Email mismatch: app thinks you're ${myEmail}, server says ${serverEmail}. Sign out and back in.`,
+      );
+    }
+
     setStatus({ kind: 'running', phase: 'Pushing' });
+    await ensureMyProfile(myEmail);
     await pushDirty(myEmail);
     setStatus({ kind: 'running', phase: 'Pulling' });
     await pullSince(myEmail);
@@ -147,7 +170,6 @@ export async function syncNow(): Promise<void> {
     syncing = false;
     if (queuedAgain) {
       queuedAgain = false;
-      // Re-run on the next tick to avoid recursive stack
       setTimeout(() => void syncNow(), 100);
     }
   }
@@ -216,7 +238,11 @@ async function pushDirty(myEmail: string): Promise<void> {
       deleted_at: toIso(g.deletedAt),
     }));
     const r = await withTimeout(supabase.from('groups').upsert(rows), 'push groups');
-    if (r.error) throw new Error(`groups: ${r.error.message}`);
+    if (r.error) {
+      throw new Error(
+        `groups: ${r.error.message} (pushing ${rows.length} as owner_email=${myEmail})`,
+      );
+    }
 
     // Push members for my groups (full replace per group is simplest and
     // matches user intent — they edited the member list locally).
