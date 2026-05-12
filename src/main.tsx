@@ -4,8 +4,6 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import './styles/index.css';
 import { ensureSeed } from './db/seed';
-// Importing the sync module registers the scheduler so mutations trigger pushes.
-import './sync/sync';
 
 ensureSeed();
 

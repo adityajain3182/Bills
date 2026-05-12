@@ -2,29 +2,14 @@ export type ID = string;
 
 export type SplitMethod = 'equal' | 'exact' | 'percent' | 'shares';
 
-// Common sync fields stamped on every synced row.
-export interface SyncFields {
-  updatedAt: number;
-  deletedAt?: number;
-  /** Local-only flag — true if row has unpushed changes. Not synced. */
-  dirty?: 0 | 1;
-  /** Group this row belongs to (so we know which group's sync to use). */
-  groupId?: ID;
-  /** Auth user who created the row, when known. */
-  ownerId?: string;
-  /** If this person row represents a real auth user. */
-  linkedUserId?: string;
-}
-
-export interface Person extends SyncFields {
+export interface Person {
   id: ID;
   name: string;
   avatarColor: string;
   createdAt: number;
-  groupId?: ID; // people are scoped to a group when synced
 }
 
-export interface Group extends SyncFields {
+export interface Group {
   id: ID;
   name: string;
   emoji: string;
@@ -48,24 +33,24 @@ export interface EqualConfig {
   includedIds: ID[];
 }
 export interface ExactConfig {
-  amounts: Record<ID, number>; // cents
+  amounts: Record<ID, number>;
 }
 export interface PercentConfig {
-  percents: Record<ID, number>; // 0..100 (one decimal allowed)
+  percents: Record<ID, number>;
 }
 export interface SharesConfig {
-  shares: Record<ID, number>; // integer >= 0
+  shares: Record<ID, number>;
 }
 
 export type SplitConfig = EqualConfig | ExactConfig | PercentConfig | SharesConfig;
 
-export interface Expense extends SyncFields {
+export interface Expense {
   id: ID;
   groupId: ID;
   description: string;
   amount: number; // cents
   currency: string;
-  date: number; // epoch ms (start of day)
+  date: number; // epoch ms
   paidBy: PaidBy[];
   splits: SplitShare[];
   splitMethod: SplitMethod;
@@ -73,14 +58,15 @@ export interface Expense extends SyncFields {
   category: string;
   notes?: string;
   createdAt: number;
+  updatedAt: number;
 }
 
-export interface Settlement extends SyncFields {
+export interface Settlement {
   id: ID;
   groupId: ID;
   fromPersonId: ID;
   toPersonId: ID;
-  amount: number; // cents
+  amount: number;
   currency: string;
   date: number;
   note?: string;
@@ -94,10 +80,6 @@ export interface Preferences {
   onboarded: 0 | 1;
   installPromptDismissed: 0 | 1;
   visitCount: number;
-  /** Last successful pull timestamp (ms). Used as the high-watermark. */
-  lastPulledAt?: number;
-  /** Auth user id, when signed in. */
-  authUserId?: string | null;
 }
 
 export const CATEGORIES = [
