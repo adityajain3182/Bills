@@ -14,6 +14,7 @@ import { CURRENCIES } from '../lib/money';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import { Sheet } from '../components/Sheet';
 import { Avatar } from '../components/Avatar';
+import { Toggle } from '../components/Toggle';
 
 export function SettingsScreen() {
   const prefs = usePrefs();
@@ -80,22 +81,39 @@ export function SettingsScreen() {
         </SectionCard>
 
         <SectionCard label="Preferences">
-          <div>
-            <div className="label mb-1">Default currency</div>
-            <select
-              className="input"
-              value={prefs?.defaultCurrency ?? 'USD'}
-              onChange={(e) => updatePrefs({ defaultCurrency: e.target.value })}
-            >
-              {CURRENCIES.map((c) => (
-                <option key={c.code} value={c.code}>
-                  {c.code} — {c.label}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-ink-muted mt-2">
-              New groups default to this currency.
-            </p>
+          <div className="space-y-4">
+            <div>
+              <div className="label mb-1">Default currency</div>
+              <select
+                className="input"
+                value={prefs?.defaultCurrency ?? 'USD'}
+                onChange={(e) => updatePrefs({ defaultCurrency: e.target.value })}
+              >
+                {CURRENCIES.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.code} — {c.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-ink-muted mt-2">
+                New groups default to this currency.
+              </p>
+            </div>
+
+            <div className="flex items-start gap-3 pt-2 border-t border-line/60">
+              <div className="flex-1">
+                <div className="font-medium text-sm">Simplify debts</div>
+                <p className="text-xs text-ink-muted mt-0.5">
+                  Show the minimum set of payments needed to settle a group. Turn off
+                  to see the raw "who owes whom" list straight from the expense log.
+                </p>
+              </div>
+              <Toggle
+                checked={(prefs?.simplifyDebts ?? 1) === 1}
+                onChange={(v) => updatePrefs({ simplifyDebts: v ? 1 : 0 })}
+                ariaLabel="Simplify debts"
+              />
+            </div>
           </div>
         </SectionCard>
 

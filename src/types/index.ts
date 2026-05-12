@@ -80,6 +80,10 @@ export interface Preferences {
   onboarded: 0 | 1;
   installPromptDismissed: 0 | 1;
   visitCount: number;
+  /** When true (default), the Balances tab shows the minimized set of
+   *  transactions via greedy creditor↔debtor matching. When false, it shows
+   *  the raw "who owes whom" pairwise debts straight from the expense log. */
+  simplifyDebts: 0 | 1;
 }
 
 export const CATEGORIES = [

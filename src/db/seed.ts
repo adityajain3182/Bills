@@ -18,6 +18,7 @@ export async function ensureSeed(): Promise<void> {
       onboarded: 0,
       installPromptDismissed: 0,
       visitCount: 1,
+      simplifyDebts: 1,
     };
     await db.preferences.put(prefs);
   } catch (err) {
