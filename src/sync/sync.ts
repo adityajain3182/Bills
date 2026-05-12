@@ -157,6 +157,38 @@ export async function syncNow(): Promise<void> {
       );
     }
 
+    // Server-side sanity check: ask Postgres what it thinks my email is.
+    // This catches the case where the schema migration hasn't been applied
+    // (my_email() returns '' so every RLS check fails).
+    const wh = await withTimeout(supabase.rpc('whoami'), 'whoami');
+    if (wh.error) {
+      const msg = wh.error.message;
+      if (/whoami|does not exist|function/.test(msg)) {
+        throw new Error(
+          "Server diagnostic missing — your Supabase project doesn't have the latest schema. Run supabase/migrations/2026-05-12-jwt-email.sql in the SQL Editor.",
+        );
+      }
+      throw new Error(`whoami: ${msg}`);
+    }
+    const info = wh.data as { uid: string | null; jwt_email: string | null; my_email: string };
+    if (!info.uid) {
+      throw new Error(
+        "Server doesn't see you as signed in (auth.uid() is null). Sign out and back in.",
+      );
+    }
+    if (!info.my_email) {
+      throw new Error(
+        info.jwt_email
+          ? `Server saw JWT email '${info.jwt_email}' but my_email() returned empty. Re-apply the latest migration.`
+          : "Server JWT has no email claim. If you signed in with phone or anonymously, switch to email or Google sign-in.",
+      );
+    }
+    if (info.my_email !== myEmail) {
+      throw new Error(
+        `Email mismatch: app=${myEmail}, server my_email()=${info.my_email}. Sign out and back in.`,
+      );
+    }
+
     setStatus({ kind: 'running', phase: 'Pushing' });
     await ensureMyProfile(myEmail);
     await pushDirty(myEmail);

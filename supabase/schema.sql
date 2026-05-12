@@ -203,6 +203,20 @@ create or replace function public.my_email()
 returns text language sql stable
 as $$ select lower(coalesce(auth.jwt() ->> 'email', '')) $$;
 
+-- Diagnostic: returns what the server "sees" for the calling user. The app
+-- calls this on sync to detect mis-applied migrations or missing JWT claims
+-- and surface an actionable error instead of a generic RLS rejection.
+create or replace function public.whoami()
+returns jsonb language sql stable
+as $$
+  select jsonb_build_object(
+    'uid', auth.uid(),
+    'jwt_email', auth.jwt() ->> 'email',
+    'my_email', public.my_email()
+  )
+$$;
+grant execute on function public.whoami() to authenticated;
+
 create or replace function public.is_in_group(g_id uuid)
 returns boolean language sql stable security definer
 set search_path = public
